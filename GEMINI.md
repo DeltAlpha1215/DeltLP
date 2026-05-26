@@ -1,4 +1,4 @@
-# Meridian — Fibonacci Hybrid Mode (Instructions)
+# DeltLP — Fibonacci Hybrid Mode (Instructions)
 
 This project has been refactored from an autonomous LLM agent into a **Deterministic Fibonacci Hybrid Bot**. All LLM features have been disabled for performance and cost efficiency.
 

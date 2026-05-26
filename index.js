@@ -23,7 +23,7 @@ import { getPoolDetail } from "./tools/screening.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
 import { notifyClose, notifyDeploy, notifyError } from "./telegram.js";
 import { trackPosition, untrackPosition, getTrackedPosition, updateTrackedPosition } from "./state.js";
-import { agentMeridianJson, getAgentMeridianHeaders } from "./tools/agent-meridian.js";
+import { agentDeltLPJson, getAgentDeltLPHeaders } from "./tools/agent-meridian.js";
 import { initTelegramBot } from "./telegram.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -460,7 +460,7 @@ async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, at
                 clearInterval(interval);
                 pendingOrders.delete(ca);
                 await executeFibDeploy(pool, amountSol, currentPrice, currentBottom, autoSwap, baseMint, bottomLevel, autoReentry);
-                process.stdout.write("\nMeridian> ");
+                process.stdout.write("\nDeltLP> ");
             }
         } catch (e) { }
     }, 15000);
@@ -584,12 +584,12 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
  */
 function startREPL() {
   const prompt = () => {
-    process.stdout.write("\nMeridian> ");
+    process.stdout.write("\nDeltLP> ");
   };
   prompt();
 
   rl.on('SIGINT', () => {
-    console.log('\n👋 Menutup Meridian...');
+    console.log('\n👋 Menutup DeltLP...');
     process.exit(0);
   });
 
@@ -790,7 +790,7 @@ function startREPL() {
 async function main() {
   console.clear();
   console.log("===============================================");
-  console.log("      MERIDIAN - FIBONACCI HYBRID MODE         ");
+  console.log("      DeltLP - FIBONACCI HYBRID MODE         ");
   console.log("  (Entry: 0.236 | Range: 0.786 | AS Mode ON)   ");
   console.log("===============================================\n");
 

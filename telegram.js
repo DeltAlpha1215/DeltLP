@@ -483,7 +483,7 @@ export async function notifyClose({ pair, pnlUsd, pnlPct }) {
                   `📊 *PnL:* ${pnlPct >= 0 ? '🟢 +' : '🔴 '}${pnlPct.toFixed(2)}%\n` +
                   `💰 *Realized:* ${pnlUsd.toFixed(4)} SOL\n` +
                   `━━━━━━━━━━━━━━\n` +
-                  `🚀 _Powered by Meridian Hybrid Bot_`;
+                  `🚀 _Powered by DeltLP Hybrid Bot_`;
 
   console.log(`📤 Sending premium PnL Card for ${pair}...`);
   
