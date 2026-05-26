@@ -401,8 +401,12 @@ async function getPool(poolAddress) {
   return poolCache.get(key);
 }
 
-setInterval(() => poolCache.clear(), 5 * 60 * 1000);
-setInterval(() => poolMetadataCache.clear(), 15 * 60 * 1000);
+// --- Memory Management ---
+export function clearDlmmCaches() {
+  poolCache.clear();
+  poolMetadataCache.clear();
+  _positionsInflight = null;
+}
 
 async function getPoolMetadata(poolAddress) {
   const key = String(poolAddress);

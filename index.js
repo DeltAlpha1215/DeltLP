@@ -16,7 +16,8 @@ import {
   closePosition, 
   deployPosition,
   getActiveBin,
-  searchPools
+  searchPools,
+  clearDlmmCaches
 } from "./tools/dlmm.js";
 import { confirmIndicatorPreset } from "./tools/chart-indicators.js";
 import { getPoolDetail } from "./tools/screening.js";
@@ -84,7 +85,9 @@ async function getAbsoluteAnchors(ca, poolAddr) {
                 console.log("✅ Berhasil menemukan ATL Inception via Jupiter!");
             }
         }
-    } catch (e) { }
+    } catch (e) {
+        log("warn", `Jupiter API failed to provide absolute anchors: ${e.message}`);
+    }
 
     if (atl > 0.000001) { 
         try {
@@ -103,13 +106,17 @@ async function getAbsoluteAnchors(ca, poolAddr) {
                     if (fdv && currentPriceDs) supply = fdv / currentPriceDs;
                 }
             }
-        } catch {}
+        } catch (e) {
+            log("warn", `DexScreener API fallback failed: ${e.message}`);
+        }
     }
 
     try {
         const meteoraData = await getDeepHistoryAnchors_Meteora(poolAddr);
         if (meteoraData && meteoraData.ath > ath) ath = meteoraData.ath;
-    } catch {}
+    } catch (e) {
+        log("warn", `Meteora deep history check failed: ${e.message}`);
+    }
     return { ath, atl, supply };
 }
 
@@ -470,7 +477,9 @@ async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, at
             }
 
             if (!isDeployed) {
-                process.stdout.write(`\r[Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | Target: < ${currentEntry.toFixed(10)}   `);
+                readline.clearLine(process.stdout, 0);
+                readline.cursorTo(process.stdout, 0);
+                process.stdout.write(`[Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | Target: < ${currentEntry.toFixed(10)}`);
                 if (currentPrice <= currentEntry) {
                     console.log(`\n\n🎯 ENTRY POINT TERCAPAI!`);
                     isDeployed = true;
@@ -484,7 +493,9 @@ async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, at
                     process.stdout.write("\nDeltLP> ");
                 }
             } else if (autoReentry) {
-                process.stdout.write(`\r[AR Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | ATH saat ini: ${currentAth.toFixed(10)}   `);
+                readline.clearLine(process.stdout, 0);
+                readline.cursorTo(process.stdout, 0);
+                process.stdout.write(`[AR Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | ATH saat ini: ${currentAth.toFixed(10)}`);
             }
 
         } catch (e) { }
