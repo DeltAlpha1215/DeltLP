@@ -1100,13 +1100,16 @@ function getClosedPnlPct(posEntry, solMode = false) {
   const reported = solMode
     ? maybeNum(posEntry?.pnlSolPctChange) ?? maybeNum(posEntry?.pnl?.percentNative)
     : maybeNum(posEntry?.pnlPctChange) ?? maybeNum(posEntry?.pnl?.percent);
-  if (reported != null) return reported;
-
+  
   const pnl = getClosedPnlValue(posEntry, solMode);
   const deposit = solMode
     ? maybeNum(posEntry?.allTimeDeposits?.total?.sol)
     : maybeNum(posEntry?.allTimeDeposits?.total?.usd);
-  return deposit && deposit > 0 ? (pnl / deposit) * 100 : 0;
+  
+  const derived = deposit && deposit > 0 ? (pnl / deposit) * 100 : 0;
+
+  // Prefer reported if it exists, otherwise derived
+  return reported ?? derived;
 }
 
 function deriveOpenPnlPct(binData, solMode = false) {
@@ -1130,7 +1133,7 @@ function deriveOpenPnlPct(binData, solMode = false) {
     ? safeNum(binData.allTimeFees?.total?.sol)
     : safeNum(binData.allTimeFees?.total?.usd);
 
-  const pnl = balances + unclaimedFees + withdrawals + fees - deposit;
+  const pnl = balances + unclaimedFees + withdrawals - deposit;
   return (pnl / deposit) * 100;
 }
 
@@ -1267,6 +1270,8 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
           log("positions_warn", `Suspicious pnl_pct for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)}`);
         }
 
+        const finalPnlPct = pnlPctSuspicious ? derivedPnlPct : (reportedPnlPct ?? derivedPnlPct);
+
         positions.push({
           position:           positionAddress,
           pool:               pool.poolAddress,
@@ -1336,9 +1341,7 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
             : binData
             ? Math.round(parseFloat(binData.pnlUsd || 0) * 10000) / 10000
             : null,
-          pnl_pct:            (lpData || binData)
-            ? Math.round(reportedPnlPct * 100) / 100
-            : null,
+          pnl_pct:            finalPnlPct != null ? Math.round(finalPnlPct * 100) / 100 : null,
           pnl_pct_derived:    derivedPnlPct != null ? Math.round(derivedPnlPct * 100) / 100 : null,
           pnl_pct_diff:       pnlPctDiff != null ? Math.round(pnlPctDiff * 100) / 100 : null,
           pnl_pct_suspicious: !!pnlPctSuspicious,

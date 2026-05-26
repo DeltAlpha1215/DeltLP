@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { log } from "./logger.js";
+import { config } from "./config.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -477,11 +478,12 @@ export async function notifyClose({ pair, pnlUsd, pnlPct }) {
 
   const cardUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&bkg=%230d0d12&w=600&h=400&v=2.9.4`;
 
+  const unit = config.management.solMode ? "SOL" : "USD";
   const caption = `🏆 *POSITION FINALIZED*\n` +
                   `━━━━━━━━━━━━━━\n` +
                   `🪙 *Asset:* ${pair.toUpperCase()}\n` +
                   `📊 *PnL:* ${pnlPct >= 0 ? '🟢 +' : '🔴 '}${pnlPct.toFixed(2)}%\n` +
-                  `💰 *Realized:* ${pnlUsd.toFixed(4)} SOL\n` +
+                  `💰 *Realized:* ${pnlUsd.toFixed(4)} ${unit}\n` +
                   `━━━━━━━━━━━━━━\n` +
                   `🚀 _Powered by DeltLP Hybrid Bot_`;
 

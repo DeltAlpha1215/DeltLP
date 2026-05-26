@@ -625,11 +625,13 @@ function startREPL() {
         console.log(`\n💰 Balance: ${balances.sol.toFixed(4)} SOL`);
         const posData = await getMyPositions({ force: true });
         console.log(`📊 Positions: ${posData.total_positions}`);
+        const unit = config.management.solMode ? "SOL" : "USD";
         posData.positions?.forEach((p, i) => {
           const tracked = getTrackedPosition(p.position);
           const tpStatus = tracked?.tpDisabled ? 'OFF' : 'ON';
           const arStatus = tracked?.autoReentry ? 'ON' : 'OFF';
-          console.log(`${i+1}. ${p.pair} | Range: ${p.in_range ? 'IN' : 'OOR'} | Age: ${p.age_minutes}m | PnL: ${p.pnl_pct?.toFixed(2) || 0}% | AS: ${tracked?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStatus} | TP: ${tpStatus}`);
+          const pnlVal = p.pnl_usd || 0; // pnl_usd holds the value in solMode context
+          console.log(`${i+1}. ${p.pair} | Range: ${p.in_range ? 'IN' : 'OOR'} | Age: ${p.age_minutes}m | PnL: ${pnlVal.toFixed(4)} ${unit} (${p.pnl_pct?.toFixed(2) || 0}%) | AS: ${tracked?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStatus} | TP: ${tpStatus}`);
         });
         break;
 
@@ -806,12 +808,14 @@ async function main() {
     status: async () => {
         const balances = await getWalletBalances();
         const posData = await getMyPositions({ force: true });
+        const unit = config.management.solMode ? "SOL" : "USD";
         let msg = `💰 *Balance:* ${balances.sol.toFixed(4)} SOL\n\n*Positions:* ${posData.total_positions}\n`;
         posData.positions?.forEach((p, i) => {
             const tr = getTrackedPosition(p.position);
             const tpStat = tr?.tpDisabled ? '❌ OFF' : '✅ ON';
             const arStat = tr?.autoReentry ? '✅ ON' : '❌ OFF';
-            msg += `${i+1}. ${p.pair} | ${p.in_range ? '✅ IN' : '⚠️ OOR'} | ${p.pnl_pct?.toFixed(2)}% | AS: ${tr?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStat} | TP: ${tpStat}\n`;
+            const pnlVal = p.pnl_usd || 0;
+            msg += `${i+1}. ${p.pair} | ${p.in_range ? '✅ IN' : '⚠️ OOR'} | ${pnlVal.toFixed(4)} ${unit} (${p.pnl_pct?.toFixed(2)}%) | AS: ${tr?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStat} | TP: ${tpStat}\n`;
         });
         return msg;
     },

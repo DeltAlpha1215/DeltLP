@@ -121,7 +121,7 @@ export const config = {
     jitoTipSol:            u.jitoTipSol            ?? 0.001,
     globalMaxCapSol:       u.globalMaxCapSol       ?? 1.0,
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
-    solMode:               u.solMode               ?? false,
+    solMode:               u.solMode               ?? true,
   },
 
   // ─── Strategy Mapping ───────────────────
