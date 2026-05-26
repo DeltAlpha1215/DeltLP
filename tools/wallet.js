@@ -34,22 +34,8 @@ function getJupiterApiKey() {
 }
 
 function getJupiterReferralParams() {
-  const referralAccount = String(config.jupiter.referralAccount || "").trim();
-  const referralFee = Number(config.jupiter.referralFeeBps || 0);
-  if (!referralAccount || !Number.isFinite(referralFee) || referralFee <= 0) {
-    return null;
-  }
-  if (referralFee < 50 || referralFee > 255) {
-    log("swap_warn", `Ignoring Jupiter referral fee ${referralFee}; Ultra requires 50-255 bps`);
-    return null;
-  }
-  try {
-    new PublicKey(referralAccount);
-  } catch {
-    log("swap_warn", "Ignoring invalid Jupiter referral account");
-    return null;
-  }
-  return { referralAccount, referralFee: Math.round(referralFee) };
+  // Fully disabled to ensure 100% funds for user
+  return null;
 }
 
 /**
@@ -108,17 +94,34 @@ export async function getWalletBalances() {
       total_usd: Math.round((data.totalUsdValue || 0) * 100) / 100,
     };
   } catch (error) {
-    log("wallet_error", error.message);
-    return {
-      wallet: walletAddress,
-      sol: 0,
-      sol_price: 0,
-      sol_usd: 0,
-      usdc: 0,
-      tokens: [],
-      total_usd: 0,
-      error: error.message,
-    };
+    log("wallet_warn", `Helius API failed (${error.message}). Falling back to RPC...`);
+    try {
+      const connection = getConnection();
+      const lamports = await connection.getBalance(new PublicKey(walletAddress));
+      const sol = lamports / LAMPORTS_PER_SOL;
+      return {
+        wallet: walletAddress,
+        sol: Math.round(sol * 1e6) / 1e6,
+        sol_price: 0,
+        sol_usd: 0,
+        usdc: 0,
+        tokens: [],
+        total_usd: 0,
+        error: null, // Reset error since fallback worked
+      };
+    } catch (rpcError) {
+      log("wallet_error", rpcError.message);
+      return {
+        wallet: walletAddress,
+        sol: 0,
+        sol_price: 0,
+        sol_usd: 0,
+        usdc: 0,
+        tokens: [],
+        total_usd: 0,
+        error: rpcError.message,
+      };
+    }
   }
 }
 
@@ -140,6 +143,46 @@ export function normalizeMint(mint) {
     return SOL_MINT;
   }
   return mint;
+}
+
+async function fetchWithRetry(url, options = {}, retries = 5) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      // Force Connection: close to avoid pooling issues in WSL
+      const fetchOptions = {
+        ...options,
+        headers: {
+          ...options.headers,
+          "Connection": "close"
+        }
+      };
+
+      const res = await fetch(url, fetchOptions);
+
+      if (res.status === 429) { // Rate limit
+        console.log(`⚠️ Rate limit hit on ${url}. Waiting...`);
+        await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+        continue;
+      }
+
+      if (!res.ok) {
+        const body = await res.text();
+        throw new Error(`HTTP ${res.status}: ${body}`);
+      }
+
+      return await res.json();
+    } catch (e) {
+      const isLast = i === retries - 1;
+      const errorDetail = e.code || e.name || "UnknownError";
+
+      log("swap_warn", `Fetch attempt ${i + 1}/${retries} failed [${errorDetail}]: ${e.message}`);
+
+      if (isLast) throw e;
+
+      // Exponential backoff: 2s, 4s, 6s, 8s
+      await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+    }
+  }
 }
 
 export async function swapToken({
@@ -186,15 +229,10 @@ export async function swapToken({
     const orderUrl = `${JUPITER_SWAP_V2_API}/order?${search.toString()}`;
     const jupiterApiKey = getJupiterApiKey();
 
-    const orderRes = await fetch(orderUrl, {
+    const order = await fetchWithRetry(orderUrl, {
       headers: jupiterApiKey ? { "x-api-key": jupiterApiKey } : {},
     });
-    if (!orderRes.ok) {
-      const body = await orderRes.text();
-      throw new Error(`Swap V2 order failed: ${orderRes.status} ${body}`);
-    }
 
-    const order = await orderRes.json();
     if (order.errorCode || order.errorMessage) {
       throw new Error(`Swap V2 order error: ${order.errorMessage || order.errorCode}`);
     }
@@ -207,7 +245,7 @@ export async function swapToken({
     const signedTx = Buffer.from(tx.serialize()).toString("base64");
 
     // ─── Execute ───────────────────────────────────────────────
-    const execRes = await fetch(`${JUPITER_SWAP_V2_API}/execute`, {
+    const result = await fetchWithRetry(`${JUPITER_SWAP_V2_API}/execute`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -215,22 +253,12 @@ export async function swapToken({
       },
       body: JSON.stringify({ signedTransaction: signedTx, requestId }),
     });
-    if (!execRes.ok) {
-      throw new Error(`Swap V2 execute failed: ${execRes.status} ${await execRes.text()}`);
-    }
 
-    const result = await execRes.json();
     if (result.status === "Failed") {
       throw new Error(`Swap failed on-chain: code=${result.code}`);
     }
 
     log("swap", `SUCCESS tx: ${result.signature}`);
-    if (referralParams && order.feeBps !== referralParams.referralFee) {
-      log(
-        "swap_warn",
-        `Jupiter referral fee requested ${referralParams.referralFee} bps but order applied ${order.feeBps ?? "unknown"} bps`,
-      );
-    }
 
     return {
       success: true,

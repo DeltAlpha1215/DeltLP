@@ -22,9 +22,7 @@
     "postinstall": "node scripts/patch-anchor.js"
   },
   "knip": {
-    "ignore": [
-      "discord-listener/**"
-    ]
+    "ignore": []
   },
   "dependencies": {
     "@meteora-ag/dlmm": "1.9.4",

@@ -775,7 +775,7 @@ async function runSafetyChecks(name, args) {
         };
       }
 
-      const minDeploy = Math.max(0.1, config.management.deployAmountSol);
+      const minDeploy = Math.max(0.001, config.management.deployAmountSol);
       if (amountY < minDeploy) {
         return {
           pass: false,

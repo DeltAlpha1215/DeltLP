@@ -483,9 +483,7 @@ switch (subcommand) {
 
   // ── screen ───────────────────────────────────────────────────────
   case "screen": {
-    const { runScreeningCycle } = await import("./index.js");
-    const report = await runScreeningCycle({ silent });
-    out({ done: true, report: report || "No action taken" });
+    die("Screening has been disabled in this LLM-free version.");
     break;
   }
 

@@ -83,24 +83,36 @@ export function isEnabled() {
   return !!TOKEN;
 }
 
+function getActiveChatIds() {
+    const envIds = (process.env.TELEGRAM_CHAT_ID || "").split(",").map(id => id.trim()).filter(Boolean);
+    if (chatId && !envIds.includes(chatId)) envIds.push(chatId);
+    return envIds;
+}
+
 async function postTelegram(method, body) {
-  if (!TOKEN || !chatId) return null;
-  try {
-    const res = await fetch(`${BASE}/${method}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, ...body }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      log("telegram_error", `${method} ${res.status}: ${err.slice(0, 200)}`);
-      return null;
-    }
-    return await res.json();
-  } catch (e) {
-    log("telegram_error", `${method} failed: ${e.message}`);
-    return null;
+  if (!TOKEN) return null;
+  const targets = getActiveChatIds();
+  if (targets.length === 0) return null;
+
+  let lastRes = null;
+  for (const targetId of targets) {
+      try {
+        const res = await fetch(`${BASE}/${method}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chat_id: targetId, ...body }),
+        });
+        if (!res.ok) {
+          const err = await res.text();
+          log("telegram_error", `${method} to ${targetId} ${res.status}: ${err.slice(0, 200)}`);
+          continue;
+        }
+        lastRes = await res.json();
+      } catch (e) {
+          log("telegram_error", `Error sending to ${targetId}: ${e.message}`);
+      }
   }
+  return lastRes;
 }
 
 async function postTelegramRaw(method, body) {
@@ -421,13 +433,71 @@ export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, 
   );
 }
 
+export async function notifyError(message) {
+  if (getActiveChatIds().length === 0) return;
+  await sendHTML(`❌ <b>ERROR ALERT</b>\n\n${message}`);
+}
+
 export async function notifyClose({ pair, pnlUsd, pnlPct }) {
-  if (hasActiveLiveMessage()) return;
-  const sign = pnlUsd >= 0 ? "+" : "";
-  await sendHTML(
-    `🔒 <b>Closed</b> ${pair}\n` +
-    `PnL: ${sign}$${(pnlUsd ?? 0).toFixed(2)} (${sign}${(pnlPct ?? 0).toFixed(2)}%)`
-  );
+  if (hasActiveLiveMessage() || getActiveChatIds().length === 0) return;
+  
+  const isProfit = pnlPct >= 0;
+  const themeColor = isProfit ? '#00ffa3' : '#ff3b3b';
+  const glowColor = isProfit ? 'rgba(0, 255, 163, 0.5)' : 'rgba(255, 59, 59, 0.5)';
+  
+  // Premium Aesthetic Card Configuration
+  const chartConfig = {
+    type: 'radialGauge',
+    data: {
+      datasets: [{
+        data: [Math.min(Math.abs(pnlPct), 100)],
+        backgroundColor: themeColor,
+        borderWidth: 0,
+      }]
+    },
+    options: {
+      domain: [0, 100],
+      trackColor: '#1a1a24',
+      centerPercentage: 80,
+      centerArea: {
+        text: `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(1)}%`,
+        fontColor: themeColor,
+        fontSize: 50,
+        fontWeight: '900'
+      },
+      title: {
+        display: true,
+        text: `CLOSED: ${pair.toUpperCase()}`,
+        fontColor: '#8a8a9d',
+        fontSize: 22,
+        padding: 20
+      }
+    }
+  };
+
+  const cardUrl = `https://quickchart.io/chart?c=${encodeURIComponent(JSON.stringify(chartConfig))}&bkg=%230d0d12&w=600&h=400&v=2.9.4`;
+
+  const caption = `🏆 *POSITION FINALIZED*\n` +
+                  `━━━━━━━━━━━━━━\n` +
+                  `🪙 *Asset:* ${pair.toUpperCase()}\n` +
+                  `📊 *PnL:* ${pnlPct >= 0 ? '🟢 +' : '🔴 '}${pnlPct.toFixed(2)}%\n` +
+                  `💰 *Realized:* ${pnlUsd.toFixed(4)} SOL\n` +
+                  `━━━━━━━━━━━━━━\n` +
+                  `🚀 _Powered by Meridian Hybrid Bot_`;
+
+  console.log(`📤 Sending premium PnL Card for ${pair}...`);
+  
+  try {
+      const res = await postTelegram("sendPhoto", {
+        photo: cardUrl,
+        caption,
+        parse_mode: "Markdown"
+      });
+      if (res && res.ok) console.log("✅ Premium Card sent.");
+  } catch (e) {
+      log("telegram_error", `PnL Card fail: ${e.message}`);
+      await sendHTML(`🔒 <b>Closed</b> ${pair}: ${pnlPct.toFixed(2)}%`);
+  }
 }
 
 export async function notifySwap({ inputSymbol, outputSymbol, amountIn, amountOut, tx }) {
@@ -447,11 +517,160 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
   );
 }
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+export async function initTelegramBot(handlers = {}) {
+  if (!TOKEN) {
+    log("error", "TELEGRAM_BOT_TOKEN not set, bot control disabled.");
+    return;
+  }
+
+  log("info", "Starting Telegram command listener...");
+  let offset = 0;
+
+  const poll = async () => {
+    try {
+      const res = await fetch(`${BASE}/getUpdates?offset=${offset}&timeout=30`);
+      if (!res.ok) return;
+      const json = await res.json();
+      if (!json.ok || !json.result.length) return;
+
+      for (const update of json.result) {
+        offset = update.update_id + 1;
+        const msg = update.message;
+        if (!msg || !msg.text) continue;
+
+        const chatId = msg.chat.id;
+        const text = msg.text.trim();
+        console.log(`📩 Telegram Message from ID [${chatId}]: "${text}"`);
+
+        const parts = text.split(" ");
+        const cmd = parts[0].toLowerCase();
+
+        // Security check: Only respond to authorized chat IDs if set
+        const authorizedEnv = process.env.TELEGRAM_CHAT_ID || "";
+        const authorizedIds = authorizedEnv.split(",").map(id => id.trim());
+        
+        if (authorizedEnv && !authorizedIds.includes(String(chatId)) && !authorizedEnv.startsWith("@")) {
+            console.log(`🚫 Unauthorized ID: ${chatId} (Expected one of: ${authorizedEnv})`);
+            continue;
+        }
+
+        if (cmd === "/start" || cmd === "/help") {
+          await sendMsg(chatId, "🤖 *Meridian Controller*\n\nAvailable commands:\n" +
+                                "/status - Check PnL\n" +
+                                "/buy <CA> [amt] [AS] [AR] - Buy token\n" +
+                                "/close <index> - Manual TP/Exit\n" +
+                                "/tp <on/off> <index> - Toggle Static TP\n" +
+                                "/ar <on/off> <index> - Toggle Auto-Reentry\n" +
+                                "/as <index> - Activate Auto-Swap\n" +
+                                "/set <tp/sl> <value> - Global TP/SL (%)\n" +
+                                "/config - View settings\n" +
+                                "/cancel <CA> - Cancel pending order\n" +
+                                "/swap <Mint> - Manual swap to SOL");
+        } else if (cmd === "/status") {
+          if (handlers.status) {
+              const report = await handlers.status();
+              await sendMsg(chatId, report);
+          }
+        } else if (cmd === "/buy") {
+          const ca = parts[1];
+          const args = parts.slice(2).join(" ");
+          if (!ca) {
+              await sendMsg(chatId, "Usage: /buy <CA> [amount] [AS] [AR]");
+          } else {
+              await sendMsg(chatId, `🚀 Starting buy for ${ca}...`);
+              if (handlers.buy) handlers.buy(ca, args);
+          }
+        } else if (cmd === "/close") {
+          const index = parts[1];
+          if (!index) {
+              await sendMsg(chatId, "Usage: /close <index>");
+          } else if (handlers.close) {
+              const res = await handlers.close(index);
+              await sendMsg(chatId, res);
+          }
+        } else if (cmd === "/as") {
+          const index = parts[1];
+          if (!index) {
+              await sendMsg(chatId, "Usage: /as <index>");
+          } else if (handlers.as) {
+              const res = await handlers.as(index);
+              await sendMsg(chatId, res);
+          }
+        } else if (cmd === "/tp") {
+          const mode = parts[1];
+          const index = parts[2];
+          if (!mode || !index) {
+              await sendMsg(chatId, "Usage: /tp <on/off> <index>");
+          } else if (handlers.tp) {
+              const res = await handlers.tp(mode, index);
+              await sendMsg(chatId, res);
+          }
+        } else if (cmd === "/ar") {
+          const mode = parts[1];
+          const index = parts[2];
+          if (!mode || !index) {
+              await sendMsg(chatId, "Usage: /ar <on/off> <index>");
+          } else if (handlers.ar) {
+              const res = await handlers.ar(mode, index);
+              await sendMsg(chatId, res);
+          }
+        } else if (cmd === "/set") {
+          const key = parts[1];
+          const val = parts[2];
+          if (!key || !val) {
+              await sendMsg(chatId, "Usage: /set <tp/sl> <value>");
+          } else if (handlers.set) {
+              const res = await handlers.set(key, val);
+              await sendMsg(chatId, res);
+          }
+        } else if (cmd === "/config") {
+          if (handlers.config) {
+              const res = await handlers.config();
+              await sendMsg(chatId, res);
+          }
+        } else if (cmd === "/swap") {
+          const mint = parts[1];
+          if (!mint) {
+              await sendMsg(chatId, "Usage: /swap <Mint_Address>");
+          } else if (handlers.swap) {
+              const res = await handlers.swap(mint);
+              await sendMsg(chatId, res);
+          }
+        } else if (cmd === "/cancel") {
+          const ca = parts[1];
+          if (!ca) {
+              await sendMsg(chatId, "Usage: /cancel <CA>");
+          } else if (handlers.cancel) {
+              const res = await handlers.cancel(ca);
+              await sendMsg(chatId, res);
+          }
+        }
+      }
+    } catch (e) {
+      log("error", `Telegram poll error: ${e.message}`);
+    }
+  };
+
+  // Start polling loop
+  (async () => {
+    while (true) {
+      await poll();
+      await new Promise(r => setTimeout(r, 2000));
+    }
+  })();
 }
 
-function fmtPct(value) {
-  const n = Number(value);
-  return Number.isFinite(n) ? `${n.toFixed(2)}%` : "?";
+async function sendMsg(chatId, text) {
+    if (!BASE) return;
+    try {
+        await fetch(`${BASE}/sendMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chat_id: chatId,
+                text,
+                parse_mode: "Markdown"
+            })
+        });
+    } catch (e) { /* ignore */ }
 }

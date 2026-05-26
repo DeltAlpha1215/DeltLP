@@ -1,10 +1,15 @@
-import { config } from "../config.js";
-import { isBlacklisted } from "../token-blacklist.js";
-import { isDevBlocked, getBlockedDevs } from "../dev-blocklist.js";
 import { log } from "../logger.js";
-import { isBaseMintOnCooldown, isPoolOnCooldown } from "../pool-memory.js";
+import { config } from "../config.js";
 import { confirmIndicatorPreset } from "./chart-indicators.js";
 import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
+
+// Dummy stubs to replace deleted dependencies
+const isBlacklisted = () => false;
+const isDevBlocked = () => false;
+const getBlockedDevs = () => ({});
+const isBaseMintOnCooldown = () => false;
+const isPoolOnCooldown = () => false;
+
 
 const DATAPI_JUP = "https://datapi.jup.ag/v1";
 
