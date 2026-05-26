@@ -113,6 +113,16 @@ async function getAbsoluteAnchors(ca, poolAddr) {
     return { ath, atl, supply };
 }
 
+async function getSolPriceUsd() {
+    try {
+        const res = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112");
+        const json = await res.json();
+        return parseFloat(json.data["So11111111111111111111111111111111111111112"]?.price || 150);
+    } catch {
+        return 150; // Fallback
+    }
+}
+
 async function getDeepHistoryAnchors_Meteora(poolAddr) {
     let allData = [];
     let lastTimestamp = Math.floor(Date.now() / 1000);
@@ -404,11 +414,12 @@ async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, auto
 /**
  * Loop pemantauan harga sampai menyentuh Fibo 0.236
  */
-async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, ath, atl, autoSwap = false, baseMint = null, bottomLevel = 0.786, supply = 0, autoReentry = false) {
+async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, ath, atl, autoSwap = false, baseMint = null, bottomLevel = 0.786, supply = 0, autoReentry = false, isAlreadyDeployed = false) {
     console.log(`\n👀 Memulai pemantauan harga live untuk ${pool.name} (AS: ${autoSwap}, AR: ${autoReentry})...`);
     let currentAth = ath;
     let currentEntry = entryPrice;
     let currentBottom = bottomPrice;
+    let isDeployed = isAlreadyDeployed;
 
     const interval = setInterval(async () => {
         try {
@@ -417,7 +428,6 @@ async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, at
 
             // LOGIKA AR (AUTO-REENTRY)
             if (currentPrice > currentAth) {
-                const oldAth = currentAth;
                 currentAth = currentPrice;
                 const range = currentAth - atl;
                 currentEntry = currentAth - (range * 0.236);
@@ -426,42 +436,57 @@ async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, at
                 if (autoReentry) {
                     console.log(`\n🚀 [AR] NEW ATH DETECTED: ${currentAth.toFixed(10)}`);
                     
-                    // Cari posisi yang sedang terbuka untuk CA ini
-                    const posData = await getMyPositions({ force: true });
-                    const existingPos = posData.positions?.find(p => 
-                        (p.baseMint === baseMint || p.token_x === baseMint) && 
-                        getTrackedPosition(p.position)?.autoReentry
-                    );
-
-                    if (existingPos) {
-                        console.log(`🔄 [AR] Menutup posisi lama ${existingPos.position.slice(0,8)}...`);
-                        const pnlData = await getPositionPnl({ pool_address: existingPos.pool, position_address: existingPos.position });
-                        
-                        // Close posisi lama (force swap ke SOL jika AS aktif)
-                        const closed = await smartClosePosition(
-                            existingPos.position, 
-                            existingPos.pair, 
-                            pnlData.pnl_pct || 0, 
-                            pnlData.pnl_usd || 0, 
-                            "AR: New ATH Reset"
+                    if (isDeployed) {
+                        // Cari posisi yang sedang terbuka untuk CA ini
+                        const posData = await getMyPositions({ force: true });
+                        const existingPos = posData.positions?.find(p => 
+                            (p.baseMint === baseMint || p.token_x === baseMint) && 
+                            getTrackedPosition(p.position)?.autoReentry
                         );
 
-                        if (closed) {
-                            console.log(`✅ [AR] Posisi lama ditutup. Menunggu re-entry di level 0.236 yang baru...`);
-                            // monitorAndDeploy akan terus berjalan dengan currentEntry yang sudah diperbarui
+                        if (existingPos) {
+                            console.log(`🔄 [AR] Menutup posisi lama ${existingPos.position.slice(0,8)}...`);
+                            const pnlData = await getPositionPnl({ pool_address: existingPos.pool, position_address: existingPos.position });
+                            
+                            // Close posisi lama (force swap ke SOL jika AS aktif)
+                            const closed = await smartClosePosition(
+                                existingPos.position, 
+                                existingPos.pair, 
+                                pnlData.pnl_pct || 0, 
+                                pnlData.pnl_usd || 0, 
+                                "AR: New ATH Reset"
+                            );
+
+                            if (closed) {
+                                console.log(`✅ [AR] Posisi lama ditutup. Menunggu re-entry di level 0.236 yang baru...`);
+                                isDeployed = false; // Reset status agar bisa masuk lagi
+                            }
+                        } else {
+                            // Jika ternyata posisi sudah tertutup (misal kena SL/TP), kita reset juga
+                            isDeployed = false;
                         }
                     }
                 }
             }
 
-            process.stdout.write(`\r[Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | Target: < ${currentEntry.toFixed(10)}   `);
-            if (currentPrice <= currentEntry) {
-                console.log(`\n\n🎯 ENTRY POINT TERCAPAI!`);
-                clearInterval(interval);
-                pendingOrders.delete(ca);
-                await executeFibDeploy(pool, amountSol, currentPrice, currentBottom, autoSwap, baseMint, bottomLevel, autoReentry);
-                process.stdout.write("\nDeltLP> ");
+            if (!isDeployed) {
+                process.stdout.write(`\r[Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | Target: < ${currentEntry.toFixed(10)}   `);
+                if (currentPrice <= currentEntry) {
+                    console.log(`\n\n🎯 ENTRY POINT TERCAPAI!`);
+                    isDeployed = true;
+                    
+                    if (!autoReentry) {
+                        clearInterval(interval);
+                        pendingOrders.delete(ca);
+                    }
+                    
+                    await executeFibDeploy(pool, amountSol, currentPrice, currentBottom, autoSwap, baseMint, bottomLevel, autoReentry);
+                    process.stdout.write("\nDeltLP> ");
+                }
+            } else if (autoReentry) {
+                process.stdout.write(`\r[AR Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | ATH saat ini: ${currentAth.toFixed(10)}   `);
             }
+
         } catch (e) { }
     }, 15000);
     pendingOrders.set(ca, { interval, poolName: pool.name });
@@ -529,9 +554,10 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
         supply = anchors.supply;
     }
     
-    // Hitung ATH Market Cap untuk menentukan level Bottom
-    const athMcap = ath * supply;
-    const bottomLevel = (athMcap > 0 && athMcap < 650000) ? 0.887 : 0.786;
+    // Ambil harga SOL saat ini untuk hitung MCap USD
+    const solPriceUsd = await getSolPriceUsd();
+    const athMcapUsd = ath * supply * solPriceUsd;
+    const bottomLevel = (athMcapUsd > 0 && athMcapUsd < 650000) ? 0.887 : 0.786;
 
     const range = ath - atl;
     const entryPrice = ath - (range * 0.236);
@@ -560,20 +586,31 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
     console.log(`-----------------------------------------------`);
     console.log(`✅ Pool Terpilih: ${bestPool.name}`);
     console.log(`📏 Bin Step Resmi: ${bestPool.bin_step}`);
-    console.log(`📈 ATH: ${ath.toFixed(10)} (MCap: $${Math.round(athMcap).toLocaleString()})`);
+    console.log(`📈 ATH: ${ath.toFixed(10)} (MCap: $${Math.round(athMcapUsd).toLocaleString()})`);
     console.log(`📉 ATL: ${atl.toFixed(10)}`);
     console.log(`🎯 Entry (0.236): < ${entryPrice.toFixed(10)}`);
     console.log(`🛡️ Bottom (${bottomLevel}):   ${bottomPrice.toFixed(10)}`);
     console.log(`💰 Sekarang:          ${currentPrice.toFixed(10)}`);
     console.log(`-----------------------------------------------`);
 
-    if (currentPrice > entryPrice) {
+    // JIKA HARGA SUDAH MASUK TARGET, LANGSUNG DEPLOY, TAPI TETAP JALANKAN MONITORING JIKA AR AKTIF
+    let isAlreadyDeployed = false;
+    if (currentPrice <= entryPrice) {
+        console.log(`🚀 Harga sudah di bawah Fibo 0.236! Mengeksekusi posisi awal...`);
+        isAlreadyDeployed = true;
+        await executeFibDeploy(bestPool, amountSol, currentPrice, bottomPrice, autoSwap, baseMint, bottomLevel, autoReentry);
+        
+        if (!autoReentry) {
+            // Jika AR tidak aktif, dan sudah di bawah entry, langsung selesai.
+            return;
+        }
+    } else {
         console.log(`⏳ HARGA MASIH TERLALU TINGGI. Menunggu...`);
-        monitorAndDeploy(ca, bestPool, amountSol, entryPrice, bottomPrice, ath, atl, autoSwap, baseMint, bottomLevel, supply);
-        return;
     }
 
-    await executeFibDeploy(bestPool, amountSol, currentPrice, bottomPrice, autoSwap, baseMint, bottomLevel);
+    // Selalu jalankan loop jika belum deploy ATAU (sudah deploy DAN AR aktif)
+    monitorAndDeploy(ca, bestPool, amountSol, entryPrice, bottomPrice, ath, atl, autoSwap, baseMint, bottomLevel, supply, autoReentry, isAlreadyDeployed);
+
   } catch (err) {
     console.log(`\n❌ ERROR: ${err.message}`);
   }
