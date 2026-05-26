@@ -557,7 +557,7 @@ export async function initTelegramBot(handlers = {}) {
         }
 
         if (cmd === "/start" || cmd === "/help") {
-          await sendMsg(chatId, "🤖 *Meridian Controller*\n\nAvailable commands:\n" +
+          await sendMsg(chatId, "🤖 *DeltLP Controller*\n\nAvailable commands:\n" +
                                 "/status - Check PnL\n" +
                                 "/buy <CA> [amt] [AS] [AR] - Buy token\n" +
                                 "/close <index> - Manual TP/Exit\n" +

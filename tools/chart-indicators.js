@@ -1,6 +1,6 @@
 import { config } from "../config.js";
 import { log } from "../logger.js";
-import { agentMeridianJson, getAgentMeridianHeaders } from "./agent-meridian.js";
+import { agentDeltLPJson, getAgentDeltLPHeaders } from "./agent-deltlp.js";
 import { safeNumber } from "../utils/number.js";
 
 const DEFAULT_INTERVALS = ["5_MINUTE"];
@@ -219,8 +219,8 @@ async function fetchChartIndicatorsForMint(
   });
   if (refresh) search.set("refresh", "1");
 
-  return agentMeridianJson(`/chart-indicators/${mint}?${search.toString()}`, {
-    headers: getAgentMeridianHeaders(),
+  return agentDeltLPJson(`/chart-indicators/${mint}?${search.toString()}`, {
+    headers: getAgentDeltLPHeaders(),
   });
 }
 

@@ -1,10 +1,10 @@
-# Meridian
+# DeltLP
 
 **Autonomous Meteora DLMM liquidity management agent for Solana, powered by LLMs.**
 
-**Links:** [Website](https://agentmeridian.xyz) | [Telegram](https://t.me/agentmeridian) | [X](https://x.com/meridian_agent)
+**Links:** [Website](https://agentdeltlp.xyz) | [Telegram](https://t.me/agentdeltlp) | [X](https://x.com/deltlp_agent)
 
-Meridian runs continuous screening and management cycles, deploying capital into high-quality Meteora DLMM pools and closing positions based on live PnL, yield, and range data. It learns from every position it closes.
+DeltLP runs continuous screening and management cycles, deploying capital into high-quality Meteora DLMM pools and closing positions based on live PnL, yield, and range data. It learns from every position it closes.
 
 ---
 
@@ -21,7 +21,7 @@ Meridian runs continuous screening and management cycles, deploying capital into
 
 ## How it works
 
-Meridian runs a **ReAct agent loop** — each cycle the LLM reasons over live data, calls tools, and acts. Two specialized agents run on independent cron schedules:
+DeltLP runs a **ReAct agent loop** — each cycle the LLM reasons over live data, calls tools, and acts. Two specialized agents run on independent cron schedules:
 
 | Agent | Default interval | Role |
 |---|---|---|
@@ -30,7 +30,7 @@ Meridian runs a **ReAct agent loop** — each cycle the LLM reasons over live da
 
 ### Agent harness
 
-Meridian's agent harness is the runtime wrapper around every autonomous cycle. It gives both **main** and **experimental** agents the same control loop: load live state, inject relevant memory, expose only role-appropriate tools, execute tool calls, and return a readable cycle report.
+DeltLP's agent harness is the runtime wrapper around every autonomous cycle. It gives both **main** and **experimental** agents the same control loop: load live state, inject relevant memory, expose only role-appropriate tools, execute tool calls, and return a readable cycle report.
 
 The harness also keeps a structured decision log in `decision-log.json` for deployments, closes, skips, and no-deploy outcomes. Each entry records the actor, pool or position, summary, reason, key risks, metrics, and rejected alternatives. Recent decisions are injected back into the system prompt and are available through `get_recent_decisions`, so the agent can answer "why did you deploy?", "why did you close?", or "why did you skip?" without guessing after the fact.
 
@@ -61,8 +61,8 @@ Agents are powered via **OpenRouter** and can be swapped for any compatible mode
 ### 1. Clone & install
 
 ```bash
-git clone https://github.com/yunus-0x/meridian
-cd meridian
+git clone https://github.com/yunus-0x/deltlp
+cd deltlp
 npm install
 ```
 
@@ -98,7 +98,7 @@ printf "replace-with-a-long-local-key\n" > .envrypt
 npm run env:encrypt
 ```
 
-Meridian loads envrypt-style encrypted values automatically. Keep `.env.raw` and `.envrypt` local; both are gitignored.
+DeltLP loads envrypt-style encrypted values automatically. Keep `.env.raw` and `.envrypt` local; both are gitignored.
 
 Copy config and edit as needed:
 
@@ -115,7 +115,7 @@ npm run dev    # dry run — no on-chain transactions
 npm start      # live mode
 ```
 
-On startup Meridian fetches your wallet balance, open positions, and top pool candidates, then begins autonomous cycles immediately.
+On startup DeltLP fetches your wallet balance, open positions, and top pool candidates, then begins autonomous cycles immediately.
 
 ### Run with PM2
 
@@ -177,10 +177,10 @@ REPL commands:
 
 ### Claude Code terminal (recommended)
 
-Install [Claude Code](https://claude.ai/code) and use it from inside the meridian directory. Claude Code has built-in agents and slash commands that use the `meridian` CLI under the hood.
+Install [Claude Code](https://claude.ai/code) and use it from inside the deltlp directory. Claude Code has built-in agents and slash commands that use the `deltlp` CLI under the hood.
 
 ```bash
-cd meridian
+cd deltlp
 claude
 ```
 
@@ -225,11 +225,11 @@ Run screening or management on a timer inside Claude Code:
 
 ### CLI (direct tool invocation)
 
-The `meridian` CLI gives you direct access to every tool with JSON output — useful for scripting, debugging, or piping into other tools.
+The `deltlp` CLI gives you direct access to every tool with JSON output — useful for scripting, debugging, or piping into other tools.
 
 ```bash
 npm install -g .   # install globally (once)
-meridian <command> [flags]
+deltlp <command> [flags]
 ```
 
 Or run without installing:
@@ -241,83 +241,83 @@ node cli.js <command> [flags]
 **Positions & PnL**
 
 ```bash
-meridian positions
-meridian pnl <position_address>
-meridian wallet-positions --wallet <addr>
+deltlp positions
+deltlp pnl <position_address>
+deltlp wallet-positions --wallet <addr>
 ```
 
 **Screening**
 
 ```bash
-meridian candidates --limit 5
-meridian pool-detail --pool <addr> [--timeframe 5m]
-meridian active-bin --pool <addr>
-meridian search-pools --query <name_or_symbol>
-meridian study --pool <addr> [--limit 4]
+deltlp candidates --limit 5
+deltlp pool-detail --pool <addr> [--timeframe 5m]
+deltlp active-bin --pool <addr>
+deltlp search-pools --query <name_or_symbol>
+deltlp study --pool <addr> [--limit 4]
 ```
 
 **Token research**
 
 ```bash
-meridian token-info --query <mint_or_symbol>
-meridian token-holders --mint <addr> [--limit 20]
-meridian token-narrative --mint <addr>
+deltlp token-info --query <mint_or_symbol>
+deltlp token-holders --mint <addr> [--limit 20]
+deltlp token-narrative --mint <addr>
 ```
 
 **Deploy & manage**
 
 ```bash
-meridian deploy --pool <addr> --amount <sol> [--bins-below 69] [--bins-above 0] [--strategy bid_ask|spot|curve] [--dry-run]
-meridian claim --position <addr>
-meridian close --position <addr> [--skip-swap] [--dry-run]
-meridian swap --from <mint> --to <mint> --amount <n> [--dry-run]
-meridian add-liquidity --position <addr> --pool <addr> [--amount-x <n>] [--amount-y <n>] [--strategy spot]
-meridian withdraw-liquidity --position <addr> --pool <addr> [--bps 10000]
+deltlp deploy --pool <addr> --amount <sol> [--bins-below 69] [--bins-above 0] [--strategy bid_ask|spot|curve] [--dry-run]
+deltlp claim --position <addr>
+deltlp close --position <addr> [--skip-swap] [--dry-run]
+deltlp swap --from <mint> --to <mint> --amount <n> [--dry-run]
+deltlp add-liquidity --position <addr> --pool <addr> [--amount-x <n>] [--amount-y <n>] [--strategy spot]
+deltlp withdraw-liquidity --position <addr> --pool <addr> [--bps 10000]
 ```
 
 **Agent cycles**
 
 ```bash
-meridian screen [--dry-run] [--silent]   # one AI screening cycle
-meridian manage [--dry-run] [--silent]   # one AI management cycle
-meridian start [--dry-run]               # start autonomous agent with cron jobs
+deltlp screen [--dry-run] [--silent]   # one AI screening cycle
+deltlp manage [--dry-run] [--silent]   # one AI management cycle
+deltlp start [--dry-run]               # start autonomous agent with cron jobs
 ```
 
 **Config**
 
 ```bash
-meridian config get
-meridian config set <key> <value>
+deltlp config get
+deltlp config set <key> <value>
 ```
 
 **Learning & memory**
 
 ```bash
-meridian lessons
-meridian lessons add "your lesson text"
-meridian performance [--limit 200]
-meridian evolve
-meridian pool-memory --pool <addr>
+deltlp lessons
+deltlp lessons add "your lesson text"
+deltlp performance [--limit 200]
+deltlp evolve
+deltlp pool-memory --pool <addr>
 ```
 
 **Blacklist**
 
 ```bash
-meridian blacklist list
-meridian blacklist add --mint <addr> --reason "reason"
+deltlp blacklist list
+deltlp blacklist add --mint <addr> --reason "reason"
 ```
 
 **Discord signals**
 
 ```bash
-meridian discord-signals
-meridian discord-signals clear
+deltlp discord-signals
+deltlp discord-signals clear
 ```
 
 **Balance**
 
 ```bash
-meridian balance
+deltlp balance
 ```
 
 **Flags**
@@ -396,7 +396,7 @@ Add known rug/farm deployer wallet addresses to `deployer-blacklist.json`:
 
 ### Notifications
 
-Meridian sends notifications automatically for:
+DeltLP sends notifications automatically for:
 - Management cycle reports (reasoning + decisions)
 - Screening cycle reports (what it found, whether it deployed)
 - OOR alerts when a position leaves range past `outOfRangeWaitMinutes`
@@ -479,7 +479,7 @@ All fields are optional — defaults shown. Edit `user-config.json`.
 2. Add `TELEGRAM_BOT_TOKEN=<token>` to your `.env`
 3. Set the exact Telegram chat and allowed controller user IDs in `.env`
 
-Meridian no longer auto-registers the first chat for safety. You must set:
+DeltLP no longer auto-registers the first chat for safety. You must set:
 
 ```env
 TELEGRAM_BOT_TOKEN=<token>
@@ -527,10 +527,10 @@ This analyzes closed position performance (win rate, avg PnL, fee yields) and au
 
 ## HiveMind
 
-HiveMind sync uses Agent Meridian at `https://api.agentmeridian.xyz` by default with the built-in public key. Agents can register, pull shared lessons/presets, and push learning events without a separate registration flow.
+HiveMind sync uses Agent DeltLP at `https://api.agentdeltlp.xyz` by default with the built-in public key. Agents can register, pull shared lessons/presets, and push learning events without a separate registration flow.
 
 **What you get:**
-- Shared lessons from other Meridian agents
+- Shared lessons from other DeltLP agents
 - Strategy presets and crowd performance context
 - Role-aware lessons injected into future screener/manager prompts when `hiveMindPullMode` is `auto`
 
@@ -540,11 +540,11 @@ HiveMind sync uses Agent Meridian at `https://api.agentmeridian.xyz` by default 
 - Agent heartbeat metadata: agent ID, version, timestamp, and basic capability flags
 - **Private keys and wallet balances are never sent**
 
-HiveMind failures are non-blocking. If Agent Meridian is unavailable, the agent logs a warning and keeps running.
+HiveMind failures are non-blocking. If Agent DeltLP is unavailable, the agent logs a warning and keeps running.
 
 ### Setup
 
-No manual HiveMind registration command is required for the shared Agent Meridian setup. `agentId` is generated automatically on startup if it is missing.
+No manual HiveMind registration command is required for the shared Agent DeltLP setup. `agentId` is generated automatically on startup if it is missing.
 
 To use a private HiveMind API key, check the Telegram announcement channel and set it as `hiveMindApiKey`.
 
@@ -559,11 +559,11 @@ Relevant config fields:
 }
 ```
 
-Blank `hiveMindUrl` and `hiveMindApiKey` values intentionally fall back to the Agent Meridian defaults. Set `hiveMindPullMode` to `manual` if you do not want shared lessons and presets pulled automatically.
+Blank `hiveMindUrl` and `hiveMindApiKey` values intentionally fall back to the Agent DeltLP defaults. Set `hiveMindPullMode` to `manual` if you do not want shared lessons and presets pulled automatically.
 
 ### Disable
 
-There is currently no empty-string disable path for HiveMind; blank values fall back to the built-in Agent Meridian defaults. A true off switch should be implemented as an explicit config flag before documenting HiveMind as disabled by clearing fields.
+There is currently no empty-string disable path for HiveMind; blank values fall back to the built-in Agent DeltLP defaults. A true off switch should be implemented as an explicit config flag before documenting HiveMind as disabled by clearing fields.
 
 ---
 
@@ -592,7 +592,7 @@ lessons.js          Learning engine: records performance, derives lessons, evolv
 pool-memory.js      Per-pool deploy history + snapshots
 strategy-library.js Saved LP strategies
 telegram.js         Telegram bot: polling + notifications
-hivemind.js         Agent Meridian HiveMind sync
+hivemind.js         Agent DeltLP HiveMind sync
 smart-wallets.js    KOL/alpha wallet tracker
 token-blacklist.js  Permanent token blacklist
 cli.js              Direct CLI — every tool as a subcommand with JSON output

@@ -5,15 +5,15 @@
   "description": "Autonomous DLMM LP agent for Meteora on Solana",
   "main": "index.js",
   "bin": {
-    "meridian": "cli.js"
+    "deltlp": "cli.js"
   },
   "scripts": {
     "setup": "node setup.js",
     "env:encrypt": "node scripts/envrypt.js encrypt",
     "start": "node index.js",
     "pm2:start": "pm2 start ecosystem.config.cjs",
-    "pm2:restart": "pm2 restart meridian --update-env",
-    "pm2:logs": "pm2 logs meridian --lines 100",
+    "pm2:restart": "pm2 restart deltlp --update-env",
+    "pm2:logs": "pm2 logs deltlp --lines 100",
     "dev": "DRY_RUN=true node index.js",
     "test": "npm run test:syntax",
     "test:syntax": "find . -path ./node_modules -prune -o -name '*.js' -exec node --check {} \\;",

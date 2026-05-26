@@ -23,7 +23,7 @@ import { getPoolDetail } from "./tools/screening.js";
 import { getWalletBalances, swapToken } from "./tools/wallet.js";
 import { notifyClose, notifyDeploy, notifyError } from "./telegram.js";
 import { trackPosition, untrackPosition, getTrackedPosition, updateTrackedPosition } from "./state.js";
-import { agentDeltLPJson, getAgentDeltLPHeaders } from "./tools/agent-meridian.js";
+import { agentDeltLPJson, getAgentDeltLPHeaders } from "./tools/agent-deltlp.js";
 import { initTelegramBot } from "./telegram.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });

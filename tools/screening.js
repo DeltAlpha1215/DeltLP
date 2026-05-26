@@ -1,7 +1,7 @@
 import { log } from "../logger.js";
 import { config } from "../config.js";
 import { confirmIndicatorPreset } from "./chart-indicators.js";
-import { getAgentMeridianBase, getAgentMeridianHeaders } from "./agent-meridian.js";
+import { getAgentDeltLPBase, getAgentDeltLPHeaders } from "./agent-deltlp.js";
 
 // Dummy stubs to replace deleted dependencies
 const isBlacklisted = () => false;
@@ -152,8 +152,8 @@ function getRawPoolScreeningRejectReason(pool, s) {
 }
 
 async function fetchDiscordSignalCandidates() {
-  const res = await fetch(`${getAgentMeridianBase()}/signals/discord/candidates`, {
-    headers: getAgentMeridianHeaders(),
+  const res = await fetch(`${getAgentDeltLPBase()}/signals/discord/candidates`, {
+    headers: getAgentDeltLPHeaders(),
   });
   if (!res.ok) throw new Error(`discord signal candidates ${res.status}`);
   const data = await res.json();

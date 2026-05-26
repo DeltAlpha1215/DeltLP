@@ -225,7 +225,7 @@ function normalizeConfigValue(key, value) {
     "agentId",
     "hiveMindPullMode",
     "publicApiKey",
-    "agentMeridianApiUrl",
+    "agentDeltLPApiUrl",
   ]);
   if (value === null) return null;
   if (booleanKeys.has(key)) return coerceBoolean(value, key);
@@ -413,9 +413,9 @@ const toolMap = {
       hiveMindApiKey: ["hiveMind", "apiKey"],
       agentId: ["hiveMind", "agentId"],
       hiveMindPullMode: ["hiveMind", "pullMode"],
-      // meridian api / relay
+      // deltlp api / relay
       publicApiKey: ["api", "publicApiKey"],
-      agentMeridianApiUrl: ["api", "url"],
+      agentDeltLPApiUrl: ["api", "url"],
       lpAgentRelayEnabled: ["api", "lpAgentRelayEnabled"],
       // chart indicators
       chartIndicatorsEnabled: ["indicators", "enabled", ["chartIndicators", "enabled"]],

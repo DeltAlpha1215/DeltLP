@@ -8,7 +8,7 @@ import { log } from "../logger.js";
 import { getPoolDetail } from "../tools/screening.js";
 import { deployPosition, getActiveBin, getPositionPnl, closePosition, searchPools } from "../tools/dlmm.js";
 import { getWalletBalances } from "../tools/wallet.js";
-import { agentMeridianJson, getAgentMeridianHeaders } from "../tools/agent-meridian.js";
+import { agentDeltLPJson, getAgentDeltLPHeaders } from "../tools/agent-deltlp.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
@@ -46,8 +46,8 @@ async function fetchOHLCV(mint, interval, candles = 100) {
     });
     
     const pathname = `/chart-indicators/${mint}?${search.toString()}`;
-    const response = await agentMeridianJson(pathname, {
-      headers: getAgentMeridianHeaders(),
+    const response = await agentDeltLPJson(pathname, {
+      headers: getAgentDeltLPHeaders(),
       retry: { maxAttempts: 3, maxElapsedMs: 10000 }
     });
     
@@ -65,7 +65,7 @@ function calculateFibLevel(high, low, level) {
 async function startTrading() {
     console.clear();
     console.log("===============================================");
-    console.log("   MERIDIAN FIBONACCI AUTO-ENTRY BOT (v1.1)    ");
+    console.log("   DELTLP FIBONACCI AUTO-ENTRY BOT (v1.1)    ");
     console.log("===============================================\n");
     
     // Check Env
@@ -187,7 +187,7 @@ async function startTrading() {
                     const slTarget = config.management.stopLossPct || -15;
 
                     console.log("\n===============================================");
-                    console.log(`💰 MODE MANAGEMENT - SESUAI CONFIG MERIDIAN`);
+                    console.log(`💰 MODE MANAGEMENT - SESUAI CONFIG DELTLP`);
                     console.log(`Target TP: ${tpTarget}% | Target SL: ${slTarget}%`);
                     console.log("===============================================\n");
 

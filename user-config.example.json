@@ -85,7 +85,7 @@
 
   "agentId": "",
   "publicApiKey": "",
-  "agentMeridianApiUrl": "https://api.agentmeridian.xyz/api",
+  "agentDeltLPApiUrl": "https://api.agentdeltlp.xyz/api",
   "lpAgentRelayEnabled": false,
   "chartIndicators": {
     "enabled": false,

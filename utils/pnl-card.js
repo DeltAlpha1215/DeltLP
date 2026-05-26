@@ -122,7 +122,7 @@ export function getPnlCardHtml(pair, pnlPct, pnlUsd) {
                 <div class="pnl-usd">≈ ${pnlUsd.toFixed(4)} SOL Profit</div>
             </div>
             <div class="footer">
-                <div>MERIDIAN HYBRID BOT</div>
+                <div>DELTLP HYBRID BOT</div>
                 <div>${new Date().toLocaleString()}</div>
             </div>
         </div>

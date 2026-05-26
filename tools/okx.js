@@ -67,11 +67,11 @@ const int = (v) => v != null && v !== "" ? parseInt(v, 10) : null;
 const serverEnrichmentCache = new Map();
 const SERVER_ENRICHMENT_CACHE_MS = 30_000;
 
-function agentMeridianBaseUrl() {
+function agentDeltLPBaseUrl() {
   return String(config.api?.url || "").replace(/\/+$/, "");
 }
 
-function agentMeridianHeaders() {
+function agentDeltLPHeaders() {
   const headers = { accept: "application/json" };
   if (config.api?.publicApiKey) {
     headers["x-api-key"] = config.api.publicApiKey;
@@ -80,7 +80,7 @@ function agentMeridianHeaders() {
 }
 
 async function fetchServerOkxEnrichment(tokenAddress, chainIndex = CHAIN_SOLANA) {
-  const baseUrl = agentMeridianBaseUrl();
+  const baseUrl = agentDeltLPBaseUrl();
   if (!baseUrl) return null;
 
   const cacheKey = `${chainIndex}:${tokenAddress}`;
@@ -90,12 +90,12 @@ async function fetchServerOkxEnrichment(tokenAddress, chainIndex = CHAIN_SOLANA)
   }
 
   const url = `${baseUrl}/okx/enrich/${encodeURIComponent(tokenAddress)}?chainIndex=${encodeURIComponent(chainIndex)}`;
-  const promise = fetch(url, { headers: agentMeridianHeaders() })
+  const promise = fetch(url, { headers: agentDeltLPHeaders() })
     .then(async (res) => {
       const text = await res.text();
       const payload = text ? JSON.parse(text) : null;
       if (!res.ok) {
-        throw new Error(payload?.error || `Agent Meridian OKX enrichment ${res.status}`);
+        throw new Error(payload?.error || `Agent DeltLP OKX enrichment ${res.status}`);
       }
       return payload;
     })
