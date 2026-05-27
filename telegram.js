@@ -357,61 +357,7 @@ export async function createLiveMessage(title, intro = "Starting...") {
 }
 
 
-// ─── Long polling ────────────────────────────────────────────────
-async function poll(onMessage) {
-  while (_polling) {
-    try {
-      const res = await fetch(
-        `${BASE}/getUpdates?offset=${_offset}&timeout=30`,
-        { signal: AbortSignal.timeout(35_000) }
-      );
-      if (!res.ok) { await sleep(5000); continue; }
-      const data = await res.json();
-      for (const update of data.result || []) {
-        _offset = update.update_id + 1;
-        const callback = update.callback_query;
-        if (callback?.data && callback?.message) {
-          const callbackMsg = {
-            chat: callback.message.chat,
-            from: callback.from,
-            text: callback.data,
-          };
-          if (!isAuthorizedIncomingMessage(callbackMsg)) continue;
-          await onMessage({
-            ...callbackMsg,
-            isCallback: true,
-            callbackQueryId: callback.id,
-            callbackData: callback.data,
-            messageId: callback.message.message_id,
-          });
-          continue;
-        }
-        const msg = update.message;
-        if (!msg?.text) continue;
-        if (!isAuthorizedIncomingMessage(msg)) continue;
-        await onMessage(msg);
-      }
-    } catch (e) {
-      if (!e.message?.includes("aborted")) {
-        log("telegram_error", `Poll error: ${e.message}`);
-      }
-      await sleep(5000);
-    }
-  }
-}
-
-export function startPolling(onMessage) {
-  if (!TOKEN) return;
-  _polling = true;
-  poll(onMessage); // fire-and-forget
-  log("telegram", "Bot polling started");
-}
-
-export function stopPolling() {
-  _polling = false;
-}
-
-// ─── Notification helpers ────────────────────────────────────────
+// Notification helpers
 export async function notifyDeploy({ pair, amountSol, position, tx, priceRange, rangeCoverage, binStep, baseFee }) {
   if (hasActiveLiveMessage()) return;
   const priceStr = priceRange
@@ -519,6 +465,9 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
   );
 }
 
+// ─── Long polling deduplication ──────────────────────────────────
+const processedUpdateIds = new Set();
+
 export async function initTelegramBot(handlers = {}) {
   if (!TOKEN) {
     log("error", "TELEGRAM_BOT_TOKEN not set, bot control disabled.");
@@ -536,6 +485,18 @@ export async function initTelegramBot(handlers = {}) {
       if (!json.ok || !json.result.length) return;
 
       for (const update of json.result) {
+        // Skip jika update_id sudah pernah diproses
+        if (processedUpdateIds.has(update.update_id)) continue;
+        
+        // Tandai sebagai sudah diproses
+        processedUpdateIds.add(update.update_id);
+        
+        // Jaga agar Set tidak terlalu besar (simpan 1000 terakhir)
+        if (processedUpdateIds.size > 1000) {
+            const firstIt = processedUpdateIds.values().next().value;
+            processedUpdateIds.delete(firstIt);
+        }
+
         offset = update.update_id + 1;
         const msg = update.message;
         if (!msg || !msg.text) continue;

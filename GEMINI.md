@@ -26,6 +26,7 @@ This project has been refactored from an autonomous LLM agent into a **Determini
 ## Configuration
 - `user-config.json` handles `takeProfitPct`, `stopLossPct`, and `deployAmountSol`.
 - `.env` handles `DRY_RUN` and `TELEGRAM_BOT_TOKEN`.
+- **Project Public Key (Ed25519)**: `MCowBQYDK2VwAyEANPol8miSagjR3u4xaly/ooc548iLyzrJ5vWm76htUxM=`
 
 ---
 *Note: This file serves as the foundational mandate for all future modifications.*

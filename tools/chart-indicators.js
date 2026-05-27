@@ -1,16 +1,15 @@
 import { config } from "../config.js";
 import { log } from "../logger.js";
-import { agentDeltLPJson, getAgentDeltLPHeaders } from "./agent-deltlp.js";
 import { safeNumber } from "../utils/number.js";
+import { fetchTokenHistory_GMGN, calculateBollingerBands, calculateRSI } from "./gmgn.js";
 
 const DEFAULT_INTERVALS = ["5_MINUTE"];
-const DEFAULT_CANDLES = 298;
 
 function normalizeIntervals(intervals) {
   const list = Array.isArray(intervals) ? intervals : DEFAULT_INTERVALS;
   return list
     .map((value) => String(value || "").trim().toUpperCase())
-    .filter((value) => value === "5_MINUTE" || value === "15_MINUTE");
+    .filter((value) => value === "5_MINUTE" || value === "15_MINUTE" || value === "1_MINUTE" || value === "1_HOUR");
 }
 
 function safeNum(value) {
@@ -51,46 +50,8 @@ function evaluatePreset(side, preset, payload) {
   const lowerBand = summary.lowerBand;
   const upperBand = summary.upperBand;
   const rsi = summary.rsi;
-  const isBullish = summary.supertrendDirection === "bullish";
-  const isBearish = summary.supertrendDirection === "bearish";
-  const crossedUp = (level) =>
-    level != null &&
-    close != null &&
-    previousClose != null &&
-    previousClose < level &&
-    close >= level;
-  const crossedDown = (level) =>
-    level != null &&
-    close != null &&
-    previousClose != null &&
-    previousClose > level &&
-    close <= level;
 
   switch (preset) {
-    case "supertrend_break":
-      return side === "entry"
-        ? {
-            confirmed: summary.supertrendBreakUp || (isBullish && close != null && summary.supertrendValue != null && close >= summary.supertrendValue),
-            reason: summary.supertrendBreakUp ? "Supertrend flipped bullish" : "Price is above bullish Supertrend",
-            signal: summary,
-          }
-        : {
-            confirmed: summary.supertrendBreakDown || (isBearish && close != null && summary.supertrendValue != null && close <= summary.supertrendValue),
-            reason: summary.supertrendBreakDown ? "Supertrend flipped bearish" : "Price is below bearish Supertrend",
-            signal: summary,
-          };
-    case "rsi_reversal":
-      return side === "entry"
-        ? {
-            confirmed: rsi != null && rsi <= oversold,
-            reason: `RSI ${rsi ?? "n/a"} <= oversold ${oversold}`,
-            signal: summary,
-          }
-        : {
-            confirmed: rsi != null && rsi >= overbought,
-            reason: `RSI ${rsi ?? "n/a"} >= overbought ${overbought}`,
-            signal: summary,
-          };
     case "bollinger_reversion":
       return side === "entry"
         ? {
@@ -103,38 +64,16 @@ function evaluatePreset(side, preset, payload) {
             reason: `Close ${close ?? "n/a"} >= upper band ${upperBand ?? "n/a"}`,
             signal: summary,
           };
-    case "rsi_plus_supertrend":
+    case "rsi_reversal":
       return side === "entry"
         ? {
-            confirmed:
-              (rsi != null && rsi <= oversold) &&
-              (summary.supertrendBreakUp || isBullish),
-            reason: `RSI oversold with bullish Supertrend context`,
+            confirmed: rsi != null && rsi <= oversold,
+            reason: `RSI ${rsi ?? "n/a"} <= oversold ${oversold}`,
             signal: summary,
           }
         : {
-            confirmed:
-              (rsi != null && rsi >= overbought) &&
-              (summary.supertrendBreakDown || isBearish),
-            reason: `RSI overbought with bearish Supertrend context`,
-            signal: summary,
-          };
-    case "supertrend_or_rsi":
-      return side === "entry"
-        ? {
-            confirmed:
-              summary.supertrendBreakUp ||
-              (isBullish && close != null && summary.supertrendValue != null && close >= summary.supertrendValue) ||
-              (rsi != null && rsi <= oversold),
-            reason: "Supertrend bullish confirmation or RSI oversold",
-            signal: summary,
-          }
-        : {
-            confirmed:
-              summary.supertrendBreakDown ||
-              (isBearish && close != null && summary.supertrendValue != null && close <= summary.supertrendValue) ||
-              (rsi != null && rsi >= overbought),
-            reason: "Supertrend bearish confirmation or RSI overbought",
+            confirmed: rsi != null && rsi >= overbought,
+            reason: `RSI ${rsi ?? "n/a"} >= overbought ${overbought}`,
             signal: summary,
           };
     case "bb_plus_rsi":
@@ -159,69 +98,62 @@ function evaluatePreset(side, preset, payload) {
             reason: "Close at/above upper band with RSI overbought",
             signal: summary,
           };
-    case "fibo_reclaim":
-      return side === "entry"
-        ? {
-            confirmed:
-              crossedUp(summary.fib618) ||
-              crossedUp(summary.fib50) ||
-              crossedUp(summary.fib786),
-            reason: "Price reclaimed a key Fibonacci level",
-            signal: summary,
-          }
-        : {
-            confirmed:
-              crossedUp(summary.fib618) ||
-              crossedUp(summary.fib50),
-            reason: "Price reclaimed a key Fibonacci level upward",
-            signal: summary,
-          };
-    case "fibo_reject":
-      return side === "entry"
-        ? {
-            confirmed:
-              crossedDown(summary.fib618) ||
-              crossedDown(summary.fib50),
-            reason: "Price rejected from a key Fibonacci level",
-            signal: summary,
-          }
-        : {
-            confirmed:
-              crossedDown(summary.fib618) ||
-              crossedDown(summary.fib50) ||
-              crossedDown(summary.fib786),
-            reason: "Price rejected below a key Fibonacci level",
-            signal: summary,
-          };
     default:
       return {
         confirmed: false,
-        reason: `Unknown preset ${preset}`,
+        reason: `Preset ${preset} not fully supported with local GMGN calculation yet.`,
         signal: summary,
       };
   }
 }
 
+/**
+ * Fetch data from GMGN and calculate indicators locally
+ */
 async function fetchChartIndicatorsForMint(
   mint,
   {
     interval,
-    candles = config.indicators.candles ?? DEFAULT_CANDLES,
-    rsiLength = config.indicators.rsiLength ?? 2,
-    refresh = false,
   } = {},
 ) {
-  const normalizedInterval = String(interval || "15_MINUTE").trim().toUpperCase();
-  const search = new URLSearchParams({
-    interval: normalizedInterval,
-    candles: String(candles),
-    rsiLength: String(rsiLength),
-  });
-  if (refresh) search.set("refresh", "1");
+  // Map internal intervals to GMGN resolutions
+  const intervalMap = {
+    "1_MINUTE": "1m",
+    "5_MINUTE": "5m",
+    "15_MINUTE": "15m",
+    "1_HOUR": "1h",
+    "4_HOUR": "4h",
+    "1_DAY": "1d"
+  };
 
-  return agentDeltLPJson(`/chart-indicators/${mint}?${search.toString()}`, {
-    headers: getAgentDeltLPHeaders(),
-  });
+  const resolution = intervalMap[interval] || "15m";
+  const history = await fetchTokenHistory_GMGN(mint, resolution);
+  
+  if (!history || !history.list || history.list.length < 2) {
+    throw new Error(`Insufficient history for ${mint} at ${resolution}`);
+  }
+
+  const klines = history.list;
+  const latestCandle = klines[klines.length - 1];
+  const prevCandle = klines[klines.length - 2];
+
+  // Local calculations
+  const rsiValue = calculateRSI(klines, config.indicators.rsiLength || 14);
+  const bb = calculateBollingerBands(klines, 20, 2);
+
+  // Return a mock payload compatible with evaluatePreset
+  return {
+    latest: {
+      candle: { close: latestCandle.close },
+      previousCandle: { close: prevCandle.close },
+      rsi: { value: rsiValue },
+      bollinger: {
+        upper: bb?.upper || null,
+        middle: bb?.middle || null,
+        lower: bb?.lower || null
+      }
+    }
+  };
 }
 
 export async function confirmIndicatorPreset({
@@ -229,7 +161,6 @@ export async function confirmIndicatorPreset({
   side,
   preset = side === "entry" ? config.indicators.entryPreset : config.indicators.exitPreset,
   intervals = config.indicators.intervals,
-  refresh = false,
 } = {}) {
   if (!config.indicators.enabled || !mint || !preset) {
     return { enabled: false, confirmed: true, reason: "Indicators disabled or not configured", intervals: [] };
@@ -243,7 +174,7 @@ export async function confirmIndicatorPreset({
   const results = [];
   for (const interval of targets) {
     try {
-      const payload = await fetchChartIndicatorsForMint(mint, { interval, refresh });
+      const payload = await fetchChartIndicatorsForMint(mint, { interval });
       const evaluation = evaluatePreset(side, preset, payload);
       results.push({
         interval,
@@ -254,7 +185,7 @@ export async function confirmIndicatorPreset({
         latest: payload?.latest || null,
       });
     } catch (error) {
-      log("indicators_warn", `Indicator fetch failed for ${mint.slice(0, 8)} ${interval}: ${error.message}`);
+      log("indicators_warn", `Local indicator calculation failed for ${mint.slice(0, 8)} ${interval}: ${error.message}`);
       results.push({
         interval,
         ok: false,
@@ -274,7 +205,7 @@ export async function confirmIndicatorPreset({
       skipped: true,
       preset,
       side,
-      reason: "Indicator API unavailable; falling back to existing logic",
+      reason: "Local GMGN calculation failed; skipping check",
       intervals: results,
     };
   }

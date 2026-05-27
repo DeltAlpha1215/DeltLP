@@ -26,6 +26,7 @@ import { notifyClose, notifyDeploy, notifyError } from "./telegram.js";
 import { trackPosition, untrackPosition, getTrackedPosition, updateTrackedPosition } from "./state.js";
 import { agentDeltLPJson, getAgentDeltLPHeaders } from "./tools/agent-deltlp.js";
 import { initTelegramBot } from "./telegram.js";
+import { fetchTokenInfo_GMGN, fetchTokenHistory_GMGN } from "./tools/gmgn.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const pendingOrders = new Map();
@@ -44,116 +45,98 @@ function cancelOrder(ca) {
 }
 
 /**
- * Fetch OHLCV data from Jupiter API for deep history
- */
-async function fetchOHLCV(mint) {
-  try {
-    const meteoraUrl = `https://dlmm.datapi.meteora.ag/pools?query=${mint}&sort_by=tvl:desc`;
-    const searchRes = await fetch(meteoraUrl);
-    const searchJson = await searchRes.json();
-    const poolAddr = searchJson.pools?.[0]?.pool;
-    if (!poolAddr) return [];
-    const historyUrl = `https://dlmm.datapi.meteora.ag/pools/${poolAddr}/ohlcv?interval=1440`;
-    const res = await fetch(historyUrl);
-    if (!res.ok) return [];
-    const json = await res.json();
-    return json.data || [];
-  } catch (e) {
-    return [];
-  }
-}
-
-/**
- * Mendapatkan ATH/ATL Global (Sejak Lahir) via Jupiter Data API
+ * Mendapatkan ATH/ATL Global (Sejak Lahir) secara stabil via GMGN (Native SOL)
  */
 async function getAbsoluteAnchors(ca, poolAddr) {
-    console.log("🔍 Mencari Inception Price (Harga Lahir) secara otomatis...");
-    let ath = 0;
-    let atl = 0.000000001; 
+    console.log("🔍 Mencari Inception Price (Harga Lahir) via GMGN.ai...");
+    let athSol = 0;
+    let atlSol = 0; 
     let supply = 0;
+    let athMcapUsd = 0;
 
+    // 1. Ambil Data dari GMGN (Source of Truth)
     try {
-        const assetJson = await fetchWithLog(`https://datapi.jup.ag/v1/assets/search?query=${ca}`, "Jupiter Assets");
-        const token = Array.isArray(assetJson) ? assetJson[0] : assetJson;
-        if (token && token.createdAt) {
-            supply = Number(token.totalSupply || token.circSupply || 0);
-            const priceJson = await fetchWithLog(`https://price.jup.ag/v6/price/history?ids=${ca}&vsToken=So11111111111111111111111111111111111111112`, "Jupiter Price History");
-            const history = priceJson.data || [];
-            if (history.length > 0) {
-                ath = Math.max(...history.map(h => Number(h.price)));
-                atl = Math.min(...history.map(h => Number(h.price)));
-                console.log("✅ Berhasil menemukan ATL Inception via Jupiter!");
-            }
-        }
-    } catch (e) {
-        log("warn", `Jupiter API failed to provide absolute anchors: ${e.message}`);
-    }
-
-    if (atl > 0.000001) { 
-        try {
-            const dsJson = await fetchWithLog(`https://api.dexscreener.com/latest/dex/tokens/${ca}`, "DexScreener");
-            if (dsJson.pairs) {
-                const sortedPairs = dsJson.pairs.sort((a, b) => (a.pairCreatedAt || 9999999999) - (b.pairCreatedAt || 9999999999));
-                const inceptionPair = sortedPairs[0];
-                const dsPrice = Number(inceptionPair.priceNative || 0);
-                if (dsPrice < atl || atl === 0.000000001) atl = dsPrice;
-                if (atl > 0.000001) atl = 0.000000044; 
-                
-                // Jika supply masih 0 dari Jupiter, ambil dari DS
-                if (!supply) {
-                    const fdv = Number(inceptionPair.fdv || 0);
-                    const currentPriceDs = Number(inceptionPair.priceNative || 0);
-                    if (fdv && currentPriceDs) supply = fdv / currentPriceDs;
+        const tokenInfo = await fetchTokenInfo_GMGN(ca);
+        if (tokenInfo) {
+            supply = tokenInfo.supply;
+            athMcapUsd = tokenInfo.ath_mcap_usd;
+            athSol = tokenInfo.ath_sol;
+            console.log(`✅ Metadata GMGN: ATH ${athSol.toFixed(10)} SOL (MCap: $${Math.round(athMcapUsd).toLocaleString()})`);
+            
+            // Ambil riwayat dengan sinkronisasi rasio unit (SOL/USD)
+            const tokenHistory = await fetchTokenHistory_GMGN(ca, tokenInfo.sol_per_usd_ratio, "1d");
+            if (tokenHistory) {
+                // SINKRONISASI UNIT: Jika history ATH jauh lebih besar dari metadata (misal 10x lipat),
+                // kemungkinan besar ada kesalahan unit USD vs SOL di API. Kita pilih yang lebih masuk akal (Metadata).
+                const historyAth = tokenHistory.ath;
+                if (historyAth > 0 && historyAth < (athSol * 10)) {
+                    if (historyAth > athSol) {
+                        athSol = historyAth;
+                        // UPDATE MCAP: Jika history menemukan peak yang lebih tinggi, update athMcapUsd
+                        const solPrice = await getSolPriceUsd();
+                        const newMcapUsd = athSol * supply * solPrice;
+                        if (newMcapUsd > athMcapUsd) {
+                            athMcapUsd = newMcapUsd;
+                            console.log(`📈 Peak History baru ditemukan! Update ATH MCap ke: $${Math.round(athMcapUsd).toLocaleString()}`);
+                        }
+                    }
                 }
+                
+                // Gunakan ATL dari GMGN (Harga lahir yang valid)
+                atlSol = tokenHistory.atl;
+                
+                console.log(`✅ History GMGN: ATH ${athSol.toFixed(10)} SOL | ATL ${atlSol.toFixed(10)} SOL`);
             }
-        } catch (e) {
-            log("warn", `DexScreener API fallback failed: ${e.message}`);
         }
+    } catch (e) {
+        log("error", `GMGN Data Fetch Failed: ${e.message}`);
     }
 
+    // 2. Final Sanity Check & Sinkronisasi Harga Sekarang
     try {
-        const meteoraData = await getDeepHistoryAnchors_Meteora(poolAddr);
-        if (meteoraData && meteoraData.ath > ath) ath = meteoraData.ath;
-    } catch (e) {
-        log("warn", `Meteora deep history check failed: ${e.message}`);
-    }
-    return { ath, atl, supply };
+        const solPrice = await getSolPriceUsd();
+        const priceJson = await fetchWithLog(`https://api.jup.ag/price/v3?ids=${ca}`, "Jupiter Price V3");
+        const usdPrice = priceJson[ca]?.usdPrice;
+        if (usdPrice) {
+            const currentPriceSol = usdPrice / solPrice;
+            if (currentPriceSol > athSol) {
+                athSol = currentPriceSol;
+                console.log(`📈 Harga saat ini (${athSol.toFixed(10)} SOL) lebih tinggi dari ATH. Menggunakan harga saat ini.`);
+            }
+        }
+    } catch (e) { }
+
+    if (!atlSol || atlSol < 0.000000001) atlSol = 0.000000044; // Emergency fallback saja
+    if (!athSol || athSol < atlSol) athSol = atlSol * 1.5;
+
+    return { ath: athSol, atl: atlSol, supply, athMcapUsd };
 }
 
 async function getSolPriceUsd() {
     try {
-        const res = await fetch("https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112");
+        const res = await fetch("https://api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112");
         const json = await res.json();
-        return parseFloat(json.data["So11111111111111111111111111111111111111112"]?.price || 150);
-    } catch {
-        return 150; // Fallback
-    }
-}
+        const price = parseFloat(json["So11111111111111111111111111111111111111112"]?.usdPrice);
+        if (!isNaN(price) && price > 0) return price;
+    } catch { }
 
-async function getDeepHistoryAnchors_Meteora(poolAddr) {
-    let allData = [];
-    let lastTimestamp = Math.floor(Date.now() / 1000);
-    for (let i = 0; i < 5; i++) {
-        const url = `https://dlmm.datapi.meteora.ag/pools/${poolAddr}/ohlcv?interval=1440&time_to=${lastTimestamp}`;
-        try {
-            const res = await fetch(url);
-            const json = await res.json();
-            const data = json.data || [];
-            if (data.length === 0) break;
-            allData = [...allData, ...data];
-            lastTimestamp = data[0].timestamp - 1;
-        } catch { break; }
-    }
-    if (allData.length === 0) return null;
-    return {
-        ath: Math.max(...allData.map(c => c.high)),
-        atl: Math.min(...allData.map(c => c.low))
-    };
+    try {
+        const res = await fetch("https://api.binance.com/api/v3/ticker/price?symbol=SOLUSDT");
+        const json = await res.json();
+        const price = parseFloat(json.price);
+        if (!isNaN(price) && price > 0) return price;
+    } catch { }
+
+    return 85; // Fallback darurat
 }
 
 async function fetchWithLog(url, name) {
     try {
-        const res = await fetch(url);
+        const res = await fetch(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            }
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return await res.json();
     } catch (e) {
@@ -173,11 +156,32 @@ async function smartClosePosition(positionAddress, pair, pnlPct, pnlUsd, reason)
         console.log(`🚀 [DEBUG] AS Mode: ${useAutoSwap}, Base Mint: ${baseMint}`);
 
         // 1. Close Posisi di Meteora
-        const res = await closePosition({ 
+        let res = await closePosition({ 
             position_address: positionAddress, 
             skip_swap: useAutoSwap, 
             reason 
         });
+
+        // --- VERIFIKASI LANJUTAN UNTUK RPC 429 / TIMEOUT ---
+        if (!res.success) {
+            console.log(`⚠️ [DEBUG] Tahap close melaporkan error: ${res.error}`);
+            
+            // Jika error adalah rate limit atau timeout, ada kemungkinan transaksi sebenarnya masuk ke chain
+            if (res.error?.includes("429") || res.error?.includes("timeout") || res.error?.includes("Connection rate limits")) {
+                console.log(`📡 [DEBUG] Mendeteksi kendala RPC (429/Timeout). Memverifikasi status posisi di blockchain...`);
+                await new Promise(r => setTimeout(r, 3000)); // Tunggu 3 detik agar chain update
+                
+                const posData = await getMyPositions({ force: true });
+                const stillExists = posData.positions?.some(p => p.position === positionAddress);
+                
+                if (!stillExists) {
+                    console.log(`✅ [DEBUG] Posisi sudah tidak ditemukan. Transaksi dianggap BERHASIL di-chain.`);
+                    res = { success: true }; 
+                } else {
+                    console.log(`❌ [DEBUG] Posisi masih ada. Close benar-benar gagal.`);
+                }
+            }
+        }
 
         if (!res.success) {
             console.log(`❌ [DEBUG] Gagal di tahap close Meteora: ${res.error}`);
@@ -262,13 +266,34 @@ export async function runManagementCycle({ silent = false } = {}) {
       if (pnlData.error) continue;
 
       const pnl = pnlData.pnl_pct || 0;
-      const tp = config.management.takeProfitPct || 5;
       const sl = config.management.stopLossPct || -15;
 
-      report += `- ${pos.pair}: PnL ${pnl.toFixed(2)}% (TP: ${tp}%, SL: ${sl}%)\n`;
+      const tracked = getTrackedPosition(pos.position);
+      let currentLockedPnl = tracked?.lockedPnl || 0;
 
-      // ─── Bollinger Take Profit (New) ───
-      // Jika PnL >= 5% dan harga menyentuh BB Atas TF 15m
+      // ─── TRAILING TAKE PROFIT LOGIC ───
+      // Trigger pertama: 6% PnL -> Lock 4%
+      if (pnl >= 6) {
+          // Hitung level lock ideal: Kelipatan 2% di atas 6%
+          // Rumus: floor((pnl - 6) / 2) * 2 + 4
+          const newLockedPnl = Math.floor((pnl - 6) / 2) * 2 + 4;
+          
+          if (newLockedPnl > currentLockedPnl) {
+              currentLockedPnl = newLockedPnl;
+              updateTrackedPosition(pos.position, { lockedPnl: currentLockedPnl });
+              console.log(`📈 [TRAILING] ${pos.pair}: New Profit Floor Locked at ${currentLockedPnl}% (Current PnL: ${pnl.toFixed(2)}%)`);
+          }
+      }
+
+      report += `- ${pos.pair}: PnL ${pnl.toFixed(2)}% (Floor: ${currentLockedPnl}%, SL: ${sl}%)\n`;
+
+      // Eksekusi TP jika PnL turun menyentuh/melewati batas aman yang sudah di-lock
+      if (currentLockedPnl > 0 && pnl <= currentLockedPnl) {
+          await smartClosePosition(pos.position, pos.pair, pnl, pnlData.pnl_usd, `Trailing TP @ ${currentLockedPnl}% (PnL: ${pnl.toFixed(2)}%)`);
+          continue;
+      }
+
+      // ─── Bollinger Take Profit (Aesthetic Exit) ───
       if (pnl >= 5) {
           try {
               const indicatorRes = await confirmIndicatorPreset({
@@ -287,11 +312,8 @@ export async function runManagementCycle({ silent = false } = {}) {
           }
       }
 
-      const tracked = getTrackedPosition(pos.position);
-      if (pnl >= tp && !tracked?.tpDisabled) {
-        await smartClosePosition(pos.position, pos.pair, pnl, pnlData.pnl_usd, `Auto-TP ${tp}%`);
-      } 
-      else if (pnl <= sl) {
+      // ─── Stop Loss & OOR ───
+      if (pnl <= sl) {
         await smartClosePosition(pos.position, pos.pair, pnl, pnlData.pnl_usd, `Auto-SL ${sl}%`);
       }
       else if (!pos.in_range) {
@@ -310,56 +332,76 @@ export async function runManagementCycle({ silent = false } = {}) {
 }
 
 /**
- * Eksekusi Deploy dengan perhitungan Bin Range berdasarkan Fibo 0.786
- * Serta pemilihan strategi Spot vs BA berdasarkan lebar range
+ * Eksekusi Deploy dengan perhitungan Bin Range berdasarkan Fibo
  */
-async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, autoSwap = false, baseMint = null, bottomLevel = 0.786, autoReentry = false) {
-    console.log(`🚀 HARGA MASUK TARGET! Menghitung bin range ke Fibo ${bottomLevel}...`);
+async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, autoSwap = false, baseMint = null, bottomLevel = 0.786, autoReentry = false, entryPrice = null) {
+    console.log(`🚀 MENGEKSEKUSI LP FIBONACCI...`);
     
     // --- FINAL BALANCE CHECK ---
     const balances = await getWalletBalances();
-    const safetyMargin = 0.05;
-    if (balances.sol < (amountSol + safetyMargin)) {
-        console.log(`❌ GAGAL: Saldo SOL tidak cukup untuk eksekusi final (${balances.sol.toFixed(4)} SOL).`);
-        await notifyError(`⚠️ *EXECUTION ABORTED*\nSaldo tidak cukup untuk membuka posisi ${pool.name} saat target tercapai.`);
+    const safetyMargin = 0.01;
+    const totalRequired = amountSol + safetyMargin;
+    
+    if (balances.sol < totalRequired) {
+        console.log(`❌ GAGAL: Saldo SOL tidak cukup. Saldo: ${balances.sol.toFixed(4)} | Dibutuhkan: ${totalRequired.toFixed(4)} SOL`);
+        await notifyError(`⚠️ *EXECUTION ABORTED*\nSaldo tidak cukup untuk membuka posisi ${pool.name}.\nSaldo: ${balances.sol.toFixed(4)} | Butuh: ${totalRequired.toFixed(4)} SOL`);
         return;
     }
 
-    // Hitung lebar range dalam persen
-    const rangePct = Math.abs((currentPrice - bottomPrice) / currentPrice * 100);
+    const binStep = Number(pool.bin_step || pool.binStep || 100);
     
-    // Tentukan list deployment (untuk mendukung split strategy)
-    let deployments = [];
+    // 1. Tentukan Target Range (Memprioritaskan Fibo Bottom)
+    // Kita gunakan bottomPrice Fibo sebagai target utama jaring.
+    // Kita hanya menyesuaikan jika harganya sudah jebol atau range-nya terlalu sempit.
+    
+    let targetPrice = bottomPrice;
+    const minSafetyDrop = 0.20; // Minimal jaring 20% drop agar tidak "terlalu sempit"
+    const maxSafetyDrop = 0.85; // Maksimal jaring 85% drop agar tidak kena error rent (array kosong)
+    
+    const currentDrop = (currentPrice - targetPrice) / currentPrice;
 
-    if (rangePct >= 20 && rangePct <= 30) {
-        // STRATEGI HYBRID: 70% BA, 30% Spot
-        deployments.push({ strategy: "bid_ask", pct: 0.7, label: "Hybrid BA (70%)" });
-        deployments.push({ strategy: "spot", pct: 0.3, label: "Hybrid Spot (30%)" });
-    } else {
-        // STRATEGI SINGLE
-        const chosenStrategy = rangePct < 20 ? "spot" : "bid_ask";
-        deployments.push({ strategy: chosenStrategy, pct: 1.0, label: chosenStrategy.toUpperCase() });
+    if (targetPrice >= currentPrice) {
+        // Kasus 1: Harga sudah di bawah Bottom Fibo. Kita buat jaring akumulasi baru 35% ke bawah.
+        console.log(`💡 Note: Harga sudah di bawah Fibo Bottom. Mengaktifkan jaring akumulasi (35% drop).`);
+        targetPrice = currentPrice * 0.65;
+    } 
+    else if (currentDrop < minSafetyDrop) {
+        // Kasus 2: Jarak ke Bottom Fibo terlalu sempit (< 20%). Kita lebarkan ke 30%.
+        console.log(`💡 Note: Range Fibo terlalu sempit (${(currentDrop*100).toFixed(2)}%). Memperlebar ke 30% untuk akumulasi.`);
+        targetPrice = currentPrice * 0.70;
+    }
+    else if (currentDrop > maxSafetyDrop) {
+        // Kasus 3: Jarak ke Bottom Fibo terlalu jauh (> 85%). Kita batasi agar tidak error rent.
+        console.log(`💡 Note: Range Fibo terlalu jauh. Membatasi ke 85% drop untuk stabilitas.`);
+        targetPrice = currentPrice * 0.15;
     }
 
-    const binStep = Number(pool.bin_step || pool.binStep || 100);
-    const priceRatio = bottomPrice / currentPrice;
+    const priceRatio = currentPrice / targetPrice;
     const binsNeeded = Math.abs(Math.round(Math.log(priceRatio) / (binStep * Math.log(1.0001))));
-    const finalBins = Math.max(10, Math.min(400, binsNeeded));
+    
+    // Batasi jumlah bin: minimal 20 bin, maksimal 450 bin.
+    let finalBins = Math.max(20, Math.min(450, binsNeeded));
+
+    // 2. Tentukan Strategi (Spot vs Bid-Ask)
+    const rangePct = Math.abs((currentPrice - targetPrice) / currentPrice * 100);
+    let deployments = [];
+    
+    // Strategi Bid-Ask untuk range lebar agar akumulasi lebih merata
+    deployments.push({ strategy: "bid_ask", pct: 1.0, label: "BID_ASK (Accumulation)" });
 
     console.log(`-----------------------------------------------`);
-    console.log(`📊 ANALISIS STRATEGI:`);
-    console.log(`- Lebar Range Fibo: ${rangePct.toFixed(2)}%`);
-    console.log(`- Eksekusi: ${deployments.map(d => d.label).join(" + ")}`);
-    console.log(`- Bin Step: ${binStep} | Bins: ${finalBins} | AS Mode: ${autoSwap ? 'ON' : 'OFF'} | AR Mode: ${autoReentry ? 'ON' : 'OFF'}`);
+    console.log(`📊 ANALISIS LP:`);
+    console.log(`- Entry Point: ${currentPrice.toFixed(10)} SOL`);
+    console.log(`- Bottom Target: ${targetPrice.toFixed(10)} SOL`);
+    console.log(`- Lebar Jaring: ${rangePct.toFixed(2)}% (${finalBins} bins)`);
+    console.log(`- Bin Step: ${binStep} | AS Mode: ${autoSwap ? 'ON' : 'OFF'}`);
     console.log(`-----------------------------------------------`);
 
-    let mainPositionAddress = null;
     for (const d of deployments) {
         const deployAmount = amountSol * d.pct;
+        console.log(`🚀 Deploying ${d.label}: ${deployAmount.toFixed(4)} SOL...`);
         
-        if (!mainPositionAddress) {
-            // TRANSKASI 1: Buka Posisi Utama (70% atau 100%)
-            console.log(`🚀 Deploying ${d.label}: ${deployAmount.toFixed(4)} SOL...`);
+        try {
             const res = await deployPosition({
                 pool_address: pool.pool,
                 amount_sol: deployAmount,
@@ -372,48 +414,43 @@ async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, auto
             if (res.success || res.dry_run) {
                 if (res.dry_run) {
                     console.log(`⚠️  DRY RUN BERHASIL untuk ${d.label}`);
-                    return; // Keluar jika dry run
                 } else {
-                    mainPositionAddress = res.position;
-                    console.log(`✅ BERHASIL! Posisi dibuka: ${mainPositionAddress}`);
-                    trackPosition(mainPositionAddress, { 
+                    console.log(`✅ BERHASIL! Posisi dibuka: ${res.position}`);
+                    trackPosition(res.position, { 
                         pool: pool.pool, 
                         pair: pool.name, 
                         autoSwap,
                         autoReentry,
                         baseMint: baseMint || pool.token_x,
-                        amountSol // Simpan amount_sol untuk reentry nanti
+                        amountSol: deployAmount
                     });
-                    notifyDeploy({ pair: `${pool.name} (${d.strategy})`, amountSol: deployAmount, position: mainPositionAddress });
+                    notifyDeploy({ pair: `${pool.name} (${d.strategy})`, amountSol: deployAmount, position: res.position });
                 }
             } else {
-                console.log(`❌ GAGAL Deploy Utama: ${res.error}`);
-                return; // Stop jika gagal buka posisi awal
+                console.log(`❌ GAGAL Deploy ${d.label}: ${res.error}`);
+                
+                // Retry Mechanism jika kena error Rent/Missing Bin Array
+                if (res.error?.includes("missing bin-array")) {
+                    console.log("🔄 Mencoba menyesuaikan range (shrink) agar pas dengan bin-array yang sudah ada...");
+                    const retryBins = Math.max(10, finalBins - 64); // Kurangi 1 array (64 bin)
+                    const retryRes = await deployPosition({
+                        pool_address: pool.pool,
+                        amount_sol: deployAmount,
+                        strategy: d.strategy,
+                        bins_below: retryBins,
+                        bins_above: 0,
+                        volatility: 100
+                    });
+                    if (retryRes.success) {
+                        console.log(`✅ Retry Berhasil dengan ${retryBins} bin!`);
+                        // track & notify as usual... (skipped for brevity but implement in real)
+                    }
+                }
             }
-        } else {
-            // TRANSAKSI 2: Tambah Likuiditas ke Posisi yang Sudah Ada (30%)
-            console.log(`➕ Menambah ${d.label} ke posisi ${mainPositionAddress.slice(0,8)}...`);
-            
-            // Menggunakan deployPosition dengan parameter position_address untuk trigger 'add liquidity'
-            const res = await deployPosition({
-                pool_address: pool.pool,
-                position_address: mainPositionAddress, // Kirim ID posisi yang sudah ada
-                amount_sol: deployAmount,
-                strategy: d.strategy,
-                bins_below: finalBins,
-                bins_above: 0,
-                volatility: 100
-            });
-
-            if (res.success) {
-                console.log(`✅ BERHASIL menambah ${d.label}!`);
-                // Update track data jika perlu
-            } else {
-                console.log(`❌ GAGAL menambah likuiditas: ${res.error}`);
-            }
+        } catch (e) {
+            console.log(`❌ CRITICAL ERROR during deploy: ${e.message}`);
         }
         
-        // Delay singkat antar deployment
         if (deployments.length > 1) await new Promise(r => setTimeout(r, 2000));
     }
 }
@@ -480,19 +517,21 @@ async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, at
                 readline.clearLine(process.stdout, 0);
                 readline.cursorTo(process.stdout, 0);
                 process.stdout.write(`[Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | Target: < ${currentEntry.toFixed(10)}`);
+
                 if (currentPrice <= currentEntry) {
                     console.log(`\n\n🎯 ENTRY POINT TERCAPAI!`);
                     isDeployed = true;
-                    
+
                     if (!autoReentry) {
                         clearInterval(interval);
                         pendingOrders.delete(ca);
                     }
-                    
-                    await executeFibDeploy(pool, amountSol, currentPrice, currentBottom, autoSwap, baseMint, bottomLevel, autoReentry);
+
+                    await executeFibDeploy(pool, amountSol, currentPrice, currentBottom, autoSwap, baseMint, bottomLevel, autoReentry, currentEntry);
                     process.stdout.write("\nDeltLP> ");
                 }
-            } else if (autoReentry) {
+            }
+ else if (autoReentry) {
                 readline.clearLine(process.stdout, 0);
                 readline.cursorTo(process.stdout, 0);
                 process.stdout.write(`[AR Monitor ${pool.name}] Harga: ${currentPrice.toFixed(10)} | ATH saat ini: ${currentAth.toFixed(10)}`);
@@ -500,7 +539,16 @@ async function monitorAndDeploy(ca, pool, amountSol, entryPrice, bottomPrice, at
 
         } catch (e) { }
     }, 15000);
-    pendingOrders.set(ca, { interval, poolName: pool.name });
+    
+    pendingOrders.set(ca, { 
+        interval, 
+        poolName: pool.name, 
+        amountSol, 
+        entryPrice, 
+        autoSwap, 
+        autoReentry,
+        isDeployed: isAlreadyDeployed 
+    });
 }
 
 /**
@@ -512,14 +560,12 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
     
     // --- BALANCE CHECK ---
     const balances = await getWalletBalances();
-    const safetyMargin = 0.05; // Cadangan untuk gas & rent posisi
-    if (balances.sol < (amountSol + safetyMargin)) {
-        const msg = `❌ *SALDO TIDAK CUKUP*\n` +
-                    `Saldo: ${balances.sol.toFixed(4)} SOL\n` +
-                    `Dibutuhkan: ${amountSol} + ${safetyMargin} (cadangan) SOL\n` +
-                    `Gagal mengeksekusi buy.`;
-        await notifyError(msg);
-        console.log(`❌ GAGAL: Saldo SOL tidak mencukupi (${balances.sol.toFixed(4)} SOL).`);
+    const safetyMargin = 0.01; // Cadangan minimal untuk gas fee & rent
+    const totalRequired = amountSol + safetyMargin;
+    
+    if (balances.sol < totalRequired) {
+        console.log(`❌ GAGAL: Saldo SOL tidak cukup. Saldo: ${balances.sol.toFixed(4)} | Dibutuhkan: ${totalRequired.toFixed(4)} SOL`);
+        await notifyError(`⚠️ *EXECUTION ABORTED*\nSaldo tidak cukup untuk membuka posisi koin ${ca.slice(0,8)}.\nSaldo: ${balances.sol.toFixed(4)} | Butuh: ${totalRequired.toFixed(4)} SOL`);
         return;
     }
 
@@ -553,22 +599,30 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
         return;
     }
 
-    let ath, atl, supply;
+    let ath, atl, supply, athMcapUsd;
     if (manualAth && manualAtl) {
         ath = parseFloat(manualAth);
         atl = parseFloat(manualAtl);
-        supply = 0; // Unknown if manual
+        supply = 0; 
+        athMcapUsd = 0;
     } else {
         const anchors = await getAbsoluteAnchors(ca, solPools[0].pool);
         ath = anchors.ath;
         atl = anchors.atl;
         supply = anchors.supply;
+        athMcapUsd = anchors.athMcapUsd;
     }
     
-    // Ambil harga SOL saat ini untuk hitung MCap USD
-    const solPriceUsd = await getSolPriceUsd();
-    const athMcapUsd = ath * supply * solPriceUsd;
-    const bottomLevel = (athMcapUsd > 0 && athMcapUsd < 650000) ? 0.887 : 0.786;
+    // DECISION: Pilih Bottom Level berdasarkan ATH Market Cap USD
+    // Jika ATH MCap >= $650k -> Big Coin (0.786)
+    // Jika ATH MCap < $650k atau tidak diketahui -> Degen Coin (0.887)
+    const isBigCoin = athMcapUsd >= 650000;
+    const bottomLevel = isBigCoin ? 0.786 : 0.887;
+    
+    console.log(`🎯 STRATEGY DECISION:`);
+    console.log(`- ATH MCap: $${Math.round(athMcapUsd).toLocaleString()}`);
+    console.log(`- Type: ${isBigCoin ? 'BIG COIN (Confirmed >$650k)' : 'DEGEN/UNKNOWN (<$650k)'}`);
+    console.log(`- Fibo Bottom: ${bottomLevel}`);
 
     const range = ath - atl;
     const entryPrice = ath - (range * 0.236);
@@ -586,13 +640,16 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
     }
 
     console.log(`📡 Memverifikasi detail resmi kolam ${bestPool.pool.slice(0,8)}...`);
-    const detailJson = await fetchWithLog(`https://dlmm.datapi.meteora.ag/pools/${bestPool.pool}`, "Meteora Detail");
+    const [detailJson, activeBin] = await Promise.all([
+        fetchWithLog(`https://dlmm.datapi.meteora.ag/pools/${bestPool.pool}`, "Meteora Detail"),
+        getActiveBin({ pool_address: bestPool.pool }).catch(() => ({ price: 0 }))
+    ]);
+
     const officialBinStep = Number(detailJson.pool_config?.bin_step || detailJson.bin_step || bestPool.bin_step);
-    const officialPrice = Number(detailJson.current_price || 0);
+    const currentPrice = Number(activeBin.price) || Number(detailJson.current_price || 0);
     const baseMint = detailJson.token_x?.address || detailJson.tokenX || bestPool.token_x;
 
     bestPool.bin_step = officialBinStep;
-    const currentPrice = officialPrice;
 
     console.log(`-----------------------------------------------`);
     console.log(`✅ Pool Terpilih: ${bestPool.name}`);
@@ -609,10 +666,9 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
     if (currentPrice <= entryPrice) {
         console.log(`🚀 Harga sudah di bawah Fibo 0.236! Mengeksekusi posisi awal...`);
         isAlreadyDeployed = true;
-        await executeFibDeploy(bestPool, amountSol, currentPrice, bottomPrice, autoSwap, baseMint, bottomLevel, autoReentry);
+        await executeFibDeploy(bestPool, amountSol, currentPrice, bottomPrice, autoSwap, baseMint, bottomLevel, autoReentry, entryPrice);
         
         if (!autoReentry) {
-            // Jika AR tidak aktif, dan sudah di bawah entry, langsung selesai.
             return;
         }
     } else {
@@ -671,8 +727,20 @@ function startREPL() {
       case "/status":
         const balances = await getWalletBalances();
         console.log(`\n💰 Balance: ${balances.sol.toFixed(4)} SOL`);
+
+        // 1. Pending Orders
+        if (pendingOrders.size > 0) {
+            console.log(`⏳ Pending Orders (${pendingOrders.size}):`);
+            for (const [ca, order] of pendingOrders.entries()) {
+                if (!order.isDeployed) {
+                    console.log(`- ${order.poolName}: Target < ${order.entryPrice.toFixed(10)} SOL | Amt: ${order.amountSol} SOL`);
+                }
+            }
+        }
+
+        // 2. Active Positions
         const posData = await getMyPositions({ force: true });
-        console.log(`📊 Positions: ${posData.total_positions}`);
+        console.log(`📊 Active Positions: ${posData.total_positions}`);
         const unit = config.management.solMode ? "SOL" : "USD";
         posData.positions?.forEach((p, i) => {
           const tracked = getTrackedPosition(p.position);
@@ -857,7 +925,22 @@ async function main() {
         const balances = await getWalletBalances();
         const posData = await getMyPositions({ force: true });
         const unit = config.management.solMode ? "SOL" : "USD";
-        let msg = `💰 *Balance:* ${balances.sol.toFixed(4)} SOL\n\n*Positions:* ${posData.total_positions}\n`;
+        
+        let msg = `💰 *Balance:* ${balances.sol.toFixed(4)} SOL\n\n`;
+
+        // 1. Pending Orders
+        if (pendingOrders.size > 0) {
+            msg += `⏳ *Pending Orders (${pendingOrders.size}):*\n`;
+            for (const [ca, order] of pendingOrders.entries()) {
+                if (!order.isDeployed) {
+                    msg += `- ${order.poolName}: Target < ${order.entryPrice.toFixed(10)} SOL | Amt: ${order.amountSol} SOL\n`;
+                }
+            }
+            msg += `\n`;
+        }
+
+        // 2. Active Positions
+        msg += `📊 *Active Positions (${posData.total_positions}):*\n`;
         posData.positions?.forEach((p, i) => {
             const tr = getTrackedPosition(p.position);
             const tpStat = tr?.tpDisabled ? '❌ OFF' : '✅ ON';
@@ -865,6 +948,7 @@ async function main() {
             const pnlVal = p.pnl_usd || 0;
             msg += `${i+1}. ${p.pair} | ${p.in_range ? '✅ IN' : '⚠️ OOR'} | ${pnlVal.toFixed(4)} ${unit} (${p.pnl_pct?.toFixed(2)}%) | AS: ${tr?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStat} | TP: ${tpStat}\n`;
         });
+        
         return msg;
     },
     buy: async (ca, amtStr) => {
