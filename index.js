@@ -334,7 +334,7 @@ export async function runManagementCycle({ silent = false } = {}) {
       else if (!pos.in_range) {
         const isOorRight = pos.active_bin > pos.upper_bin;
         const oorTime = pos.minutes_out_of_range || 0;
-        if (isOorRight && oorTime >= 10) {
+        if (isOorRight && oorTime >= 5) {
             await smartClosePosition(pos.position, pos.pair, pnl, pnlData.pnl_usd, `Auto-Close OOR Right (${oorTime}m)`);
         }
       }
