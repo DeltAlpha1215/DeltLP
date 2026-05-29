@@ -520,9 +520,10 @@ export async function initTelegramBot(handlers = {}) {
         if (cmd === "/start" || cmd === "/help") {
           await sendMsg(chatId, "🤖 *DeltLP Controller*\n\nAvailable commands:\n" +
                                 "/status - Check PnL\n" +
-                                "/buy <CA> [amt] [AS] [AR] - Buy token\n" +
+                                "/lp <CA> [amt] [AS] [AR] - Open LP Fibonacci\n" +
+                                "/lo <CA> [amt] [BA/Spot] - Limit Order Fibonacci\n" +
                                 "/close <index> - Manual TP/Exit\n" +
-                                "/tp <on/off> <index> - Toggle Static TP\n" +
+                                "/tp <tr/bb/off> <index> - Set TP Mode\n" +
                                 "/ar <on/off> <index> - Toggle Auto-Reentry\n" +
                                 "/as <index> - Activate Auto-Swap\n" +
                                 "/set <tp/sl> <value> - Global TP/SL (%)\n" +
@@ -534,15 +535,24 @@ export async function initTelegramBot(handlers = {}) {
               const report = await handlers.status();
               await sendMsg(chatId, report);
           }
-        } else if (cmd === "/buy") {
+        } else if (cmd === "/lp") {
           const ca = parts[1];
           const args = parts.slice(2).join(" ");
           if (!ca) {
-              await sendMsg(chatId, "Usage: /buy <CA> [amount] [AS] [AR]");
+              await sendMsg(chatId, "Usage: /lp <CA> [amount] [AS] [AR]");
           } else {
-              await sendMsg(chatId, `🚀 Starting buy for ${ca}...`);
-              if (handlers.buy) handlers.buy(ca, args);
+              await sendMsg(chatId, `🚀 Starting LP for ${ca}...`);
+              if (handlers.lp) handlers.lp(ca, args);
           }
+        } else if (cmd === "/lo") {
+            const ca = parts[1];
+            const args = parts.slice(2).join(" ");
+            if (!ca) {
+                await sendMsg(chatId, "Usage: /lo <CA> [amount] [BA/Spot]");
+            } else if (handlers.lo) {
+                await sendMsg(chatId, `🎯 Starting Limit Order for ${ca}...`);
+                await handlers.lo(ca, args);
+            }
         } else if (cmd === "/close") {
           const index = parts[1];
           if (!index) {

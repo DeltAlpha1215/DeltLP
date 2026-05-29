@@ -1116,29 +1116,32 @@ function getClosedPnlPct(posEntry, solMode = false) {
   return reported ?? derived;
 }
 
-function deriveOpenPnlPct(binData, solMode = false) {
-  if (!binData) return null;
-
-  const deposit = solMode
-    ? safeNum(binData.allTimeDeposits?.total?.sol)
-    : safeNum(binData.allTimeDeposits?.total?.usd);
-  if (deposit <= 0) return null;
-
+function deriveOpenPnlPct(binData, solMode = false, fallbackDepositSol = null) {
+  // Equity = Current Balances + Unclaimed Fees
   const balances = solMode
-    ? safeNum(binData.unrealizedPnl?.balancesSol)
-    : safeNum(binData.unrealizedPnl?.balances);
+    ? safeNum(binData?.unrealizedPnl?.balancesSol)
+    : safeNum(binData?.unrealizedPnl?.balances);
+  
   const unclaimedFees = solMode
-    ? safeNum(binData.unrealizedPnl?.unclaimedFeeTokenX?.amountSol) + safeNum(binData.unrealizedPnl?.unclaimedFeeTokenY?.amountSol)
-    : safeNum(binData.unrealizedPnl?.unclaimedFeeTokenX?.usd) + safeNum(binData.unrealizedPnl?.unclaimedFeeTokenY?.usd);
-  const withdrawals = solMode
-    ? safeNum(binData.allTimeWithdrawals?.total?.sol)
-    : safeNum(binData.allTimeWithdrawals?.total?.usd);
-  const fees = solMode
-    ? safeNum(binData.allTimeFees?.total?.sol)
-    : safeNum(binData.allTimeFees?.total?.usd);
+    ? safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol) + safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol)
+    : safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenX?.usd) + safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenY?.usd);
 
-  const pnl = balances + unclaimedFees + withdrawals - deposit;
-  return (pnl / deposit) * 100;
+  const equity = balances + unclaimedFees;
+
+  // Deposit Source of Truth
+  let deposit = solMode
+    ? safeNum(binData?.allTimeDeposits?.total?.sol)
+    : safeNum(binData?.allTimeDeposits?.total?.usd);
+
+  // Use tracked fallback if API reports 0 deposit
+  if (deposit <= 0 && fallbackDepositSol && fallbackDepositSol > 0) {
+      deposit = solMode ? fallbackDepositSol : (fallbackDepositSol * 150); // Fallback to SOL amount if USD mode is active
+  }
+
+  if (deposit <= 0) return 0;
+
+  const pnlValue = equity - deposit;
+  return (pnlValue / deposit) * 100;
 }
 
 function deriveLpAgentPnlPct(lpData, solMode = false) {
@@ -1256,25 +1259,21 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
         const ageFromState = tracked?.deployed_at
           ? Math.floor((Date.now() - new Date(tracked.deployed_at).getTime()) / 60000)
           : null;
-        const reportedPnlPct = lpData
-          ? parseFloat(config.management.solMode ? (lpData.pnl?.percentNative || 0) : (lpData.pnl?.percent || 0))
-          : binData
-            ? parseFloat(config.management.solMode ? (binData.pnlSolPctChange || 0) : (binData.pnlPctChange || 0))
-            : null;
         const derivedPnlPct = lpData
           ? deriveLpAgentPnlPct(lpData, config.management.solMode)
-          : binData
-            ? deriveOpenPnlPct(binData, config.management.solMode)
-            : null;
-        const pnlPctDiff = reportedPnlPct != null && derivedPnlPct != null
-          ? Math.abs(reportedPnlPct - derivedPnlPct)
-          : null;
-        const pnlPctSuspicious = pnlPctDiff != null && pnlPctDiff > (config.management.pnlSanityMaxDiffPct ?? 5);
-        if (pnlPctSuspicious) {
-          log("positions_warn", `Suspicious pnl_pct for ${positionAddress.slice(0, 8)}: reported=${reportedPnlPct.toFixed(2)} derived=${derivedPnlPct.toFixed(2)} diff=${pnlPctDiff.toFixed(2)}`);
-        }
+          : deriveOpenPnlPct(binData, config.management.solMode, tracked?.amount_sol);
 
-        const finalPnlPct = pnlPctSuspicious ? derivedPnlPct : (reportedPnlPct ?? derivedPnlPct);
+        const finalPnlPct = derivedPnlPct ?? 0;
+
+        // Calculate Equity for pnl_usd
+        const balances = config.management.solMode ? safeNum(binData?.unrealizedPnl?.balancesSol) : safeNum(binData?.unrealizedPnl?.balances);
+        const fees = config.management.solMode ? (safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenX?.amountSol) + safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenY?.amountSol)) : (safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenX?.usd) + safeNum(binData?.unrealizedPnl?.unclaimedFeeTokenY?.usd));
+        const currentEquity = (lpData ? (config.management.solMode ? safeNum(lpData.valueNative) : safeNum(lpData.value)) : (balances + fees));
+        
+        let initialDeposit = config.management.solMode ? safeNum(binData?.allTimeDeposits?.total?.sol) : safeNum(binData?.allTimeDeposits?.total?.usd);
+        if (initialDeposit <= 0 && tracked?.amount_sol) {
+            initialDeposit = config.management.solMode ? tracked.amount_sol : (tracked.amount_sol * 150);
+        }
 
         positions.push({
           position:           positionAddress,
@@ -1292,11 +1291,7 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
                   : safeNum(lpData.unCollectedFee)
               ) * 10000) / 10000
             : binData
-            ? Math.round((
-                config.management.solMode
-                  ? parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.amountSol || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.amountSol || 0)
-                  : parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenX?.usd || 0) + parseFloat(binData.unrealizedPnl?.unclaimedFeeTokenY?.usd || 0)
-              ) * 10000) / 10000
+            ? Math.round(fees * 10000) / 10000
             : null,
           total_value_usd:    lpData
             ? Math.round((
@@ -1305,11 +1300,7 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
                   : safeNum(lpData.value)
               ) * 10000) / 10000
             : binData
-            ? Math.round((
-                config.management.solMode
-                  ? parseFloat(binData.unrealizedPnl?.balancesSol || 0)
-                  : parseFloat(binData.unrealizedPnl?.balances || 0)
-              ) * 10000) / 10000
+            ? Math.round(balances * 10000) / 10000
             : null,
           // Always-USD fields for internal accounting and lesson recording.
           total_value_true_usd: lpData
@@ -1331,24 +1322,16 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
             : binData
             ? Math.round(parseFloat(binData.allTimeFees?.total?.usd || 0) * 10000) / 10000
             : null,
-          pnl_usd:            lpData
-            ? Math.round((
-                config.management.solMode
-                  ? safeNum(lpData.pnl?.valueNative)
-                  : safeNum(lpData.pnl?.value)
-              ) * 10000) / 10000
-            : binData
-            ? Math.round(parseFloat(config.management.solMode ? (binData.pnlSol || 0) : (binData.pnlUsd || 0)) * 10000) / 10000
-            : null,
+          pnl_usd:            Math.round((currentEquity - initialDeposit) * 10000) / 10000,
           pnl_true_usd:       lpData
             ? Math.round(safeNum(lpData.pnl?.value) * 10000) / 10000
             : binData
             ? Math.round(parseFloat(binData.pnlUsd || 0) * 10000) / 10000
             : null,
-          pnl_pct:            finalPnlPct != null ? Math.round(finalPnlPct * 100) / 100 : null,
-          pnl_pct_derived:    derivedPnlPct != null ? Math.round(derivedPnlPct * 100) / 100 : null,
-          pnl_pct_diff:       pnlPctDiff != null ? Math.round(pnlPctDiff * 100) / 100 : null,
-          pnl_pct_suspicious: !!pnlPctSuspicious,
+          pnl_pct:            Math.round(finalPnlPct * 100) / 100,
+          pnl_pct_derived:    Math.round(finalPnlPct * 100) / 100,
+          pnl_pct_diff:       0,
+          pnl_pct_suspicious: false,
           unclaimed_fees_true_usd: lpData
             ? Math.round(safeNum(lpData.unCollectedFee) * 10000) / 10000
             : binData

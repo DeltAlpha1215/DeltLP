@@ -27,17 +27,35 @@ export async function fetchTokenInfo_GMGN(ca) {
         const data = runGMGNCli(`token info --chain sol --address ${ca}`);
         if (!data) return null;
 
-        const priceUsd = Number(data.price?.price || 0);
-        const supply = Number(data.circulating_supply || data.total_supply || 0);
-        const athPriceUsd = Number(data.ath_price || 0);
-
         // Cari harga SOL dari pool reserves (paling akurat untuk rasio)
         let priceSol = Number(data.price?.price_sol || 0);
-        if (!priceSol && data.pool) {
-            const quoteRes = Number(data.pool.quote_reserve || 0);
-            const baseRes = Number(data.pool.base_reserve || 0);
-            if (quoteRes > 0 && baseRes > 0) priceSol = quoteRes / baseRes;
+        const quoteSymbol = data.pool?.quote_symbol?.toUpperCase() || "SOL";
+        const isUsdPool = quoteSymbol === "USDC" || quoteSymbol === "USDT" || quoteSymbol === "USD";
+
+        if (isUsdPool || !priceSol) {
+            const quoteRes = Number(data.pool?.quote_reserve || 0);
+            const baseRes = Number(data.pool?.base_reserve || 0);
+            if (quoteRes > 0 && baseRes > 0) {
+                const rawPrice = quoteRes / baseRes;
+                if (isUsdPool) {
+                    // Jika pool USDC, rawPrice adalah USD. Konversi ke SOL.
+                    const solPriceUsd = await getSolPriceUsd_Internal();
+                    priceSol = rawPrice / solPriceUsd;
+                } else {
+                    priceSol = rawPrice;
+                }
+            }
         }
+
+        // Jika masih nol, coba cari dari metadata price
+        if (!priceSol && data.price?.price) {
+            const solPriceUsd = await getSolPriceUsd_Internal();
+            priceSol = Number(data.price.price) / solPriceUsd;
+        }
+
+        const priceUsd = Number(data.price?.price || (priceSol * 150));
+        const supply = Number(data.circulating_supply || data.total_supply || 0);
+        const athPriceUsd = Number(data.ath_price || 0);
 
         // Hitung Rasio SOL/USD koin ini untuk konversi history nanti
         const solPerUsd = (priceSol > 0 && priceUsd > 0) ? (priceSol / priceUsd) : (1 / 150);
@@ -68,6 +86,19 @@ export async function fetchTokenInfo_GMGN(ca) {
         log("error", `GMGN Token Info Fetch Failed: ${e.message}`);
         return null;
     }
+}
+
+/**
+ * Internal helper to get SOL price for conversion
+ */
+async function getSolPriceUsd_Internal() {
+    try {
+        const res = await fetch("https://api.jup.ag/price/v3?ids=So11111111111111111111111111111111111111112");
+        const json = await res.json();
+        const price = parseFloat(json["So11111111111111111111111111111111111111112"]?.usdPrice);
+        if (!isNaN(price) && price > 0) return price;
+    } catch { }
+    return 150; // Fallback
 }
 
 /**
