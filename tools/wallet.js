@@ -4,6 +4,8 @@ import {
   LAMPORTS_PER_SOL,
   VersionedTransaction,
   Keypair,
+  SystemProgram,
+  Transaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
 import { log } from "../logger.js";
@@ -274,6 +276,42 @@ export async function swapToken({
     };
   } catch (error) {
     log("swap_error", error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Transfer SOL to a destination address.
+ */
+export async function transferSol(toAddress, amountSol) {
+  try {
+    const wallet = getWallet();
+    const connection = getConnection();
+    const toPubkey = new PublicKey(toAddress);
+    
+    // Use legacy Transaction for simple transfer
+    const transaction = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: wallet.publicKey,
+        toPubkey: toPubkey,
+        lamports: Math.floor(amountSol * LAMPORTS_PER_SOL),
+      })
+    );
+
+    // Get latest blockhash
+    const { blockhash } = await connection.getLatestBlockhash();
+    transaction.recentBlockhash = blockhash;
+    transaction.feePayer = wallet.publicKey;
+
+    // Sign and send
+    transaction.sign(wallet);
+    const signature = await connection.sendRawTransaction(transaction.serialize());
+    
+    await connection.confirmTransaction(signature, "confirmed");
+    log("wallet", `Transfer SUCCESS: ${amountSol} SOL to ${toAddress} (tx: ${signature})`);
+    return { success: true, tx: signature };
+  } catch (error) {
+    log("wallet_error", `Transfer FAILED: ${error.message}`);
     return { success: false, error: error.message };
   }
 }

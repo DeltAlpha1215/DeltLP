@@ -114,7 +114,7 @@ export const config = {
     positionSizePct:       u.positionSizePct       ?? 0.35,
     // Trailing take-profit
     trailingTakeProfit:    u.trailingTakeProfit    ?? true,
-    trailingTriggerPct:    u.trailingTriggerPct    ?? 3,    // activate trailing at X% PnL
+    trailingTriggerPct:    u.trailingTriggerPct    ?? 7,    // activate trailing at X% PnL
     trailingDropPct:       u.trailingDropPct       ?? 1.5,  // close when drops X% from peak
     pnlSanityMaxDiffPct:   u.pnlSanityMaxDiffPct   ?? 5,    // max allowed diff between reported and derived pnl % before ignoring a tick
     maxPriorityFeeSol:     u.maxPriorityFeeSol     ?? 0.005,
@@ -122,6 +122,9 @@ export const config = {
     globalMaxCapSol:       u.globalMaxCapSol       ?? 1.0,
     // SOL mode — positions, PnL, and balances reported in SOL instead of USD
     solMode:               u.solMode               ?? true,
+    // Fee settings
+    feeWallet:             u.feeWallet             ?? null,
+    feePct:                u.feePct                ?? 1.0,
   },
 
   // ─── Strategy Mapping ───────────────────

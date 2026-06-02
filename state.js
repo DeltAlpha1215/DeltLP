@@ -81,3 +81,37 @@ export function setPositionInstruction(address, instruction) {
 export function setPositionNote(address, note) {
     setPositionInstruction(address, note);
 }
+
+/**
+ * Menandai posisi sebagai Out of Range (OOR)
+ */
+export function markOutOfRange(address) {
+  const state = getTrackedPositions();
+  if (state[address] && !state[address].oorSince) {
+    state[address].oorSince = new Date().toISOString();
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  }
+}
+
+/**
+ * Menandai posisi sebagai In Range
+ */
+export function markInRange(address) {
+  const state = getTrackedPositions();
+  if (state[address] && state[address].oorSince) {
+    delete state[address].oorSince;
+    fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  }
+}
+
+/**
+ * Mendapatkan durasi posisi sudah OOR dalam menit
+ */
+export function minutesOutOfRange(address) {
+  const state = getTrackedPositions();
+  const pos = state[address];
+  if (!pos || !pos.oorSince) return 0;
+  
+  const oorAt = new Date(pos.oorSince).getTime();
+  return Math.floor((Date.now() - oorAt) / 60000);
+}

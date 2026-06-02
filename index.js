@@ -19,12 +19,14 @@ import {
   searchPools
 } from "./tools/dlmm.js";
 import { confirmIndicatorPreset } from "./tools/chart-indicators.js";
-import { getWalletBalances, swapToken } from "./tools/wallet.js";
+import { getWalletBalances, swapToken, transferSol } from "./tools/wallet.js";
 import { notifyClose, notifyDeploy, notifyError } from "./telegram.js";
 import { trackPosition, untrackPosition, getTrackedPosition, updateTrackedPosition } from "./state.js";
 import { initTelegramBot } from "./telegram.js";
 import { fetchTokenInfo_GMGN, fetchTokenHistory_GMGN } from "./tools/gmgn.js";
 import { executeLimitOrder } from "./tools/limit-order.js";
+import { checkTokenHealth } from "./tools/health.js";
+import { getMeteoraTopPools, getPoolVolatility } from "./tools/meteora-top.js";
 
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 const pendingOrders = new Map();
@@ -148,7 +150,12 @@ async function smartClosePosition(positionAddress, pair, pnlPct, pnlUsd, reason)
     try {
         const tracked = getTrackedPosition(positionAddress);
         const useAutoSwap = tracked?.autoSwap || false;
-        const baseMint = tracked?.baseMint;
+        let baseMint = tracked?.baseMint;
+        
+        // Safety: Ensure baseMint is a string (CA)
+        if (baseMint && typeof baseMint === 'object') {
+            baseMint = baseMint.mint || baseMint.address;
+        }
 
         console.log(`🚀 [DEBUG] Memulai Smart Close untuk ${pair}...`);
         console.log(`🚀 [DEBUG] Alamat Posisi: ${positionAddress}`);
@@ -235,6 +242,31 @@ async function smartClosePosition(positionAddress, pair, pnlPct, pnlUsd, reason)
             }
         }
 
+        // 3. Profit Fee Logic (1% of profit)
+        if (pnlUsd > 0 && config.management.feeWallet) {
+            try {
+                // pnlUsd is in SOL if solMode is true, otherwise in USD
+                let profitInSol = pnlUsd;
+                if (!config.management.solMode) {
+                    const solPrice = await getSolPriceUsd();
+                    profitInSol = pnlUsd / solPrice;
+                }
+
+                const feeAmount = profitInSol * (config.management.feePct / 100);
+                if (feeAmount > 0.000001) { // Min transfer threshold
+                    console.log(`💰 [FEE] Menghitung fee ${config.management.feePct}% dari profit ${profitInSol.toFixed(6)} SOL...`);
+                    const feeRes = await transferSol(config.management.feeWallet, feeAmount);
+                    if (feeRes.success) {
+                        console.log(`✅ [FEE] Berhasil mengirim fee ${feeAmount.toFixed(6)} SOL ke ${config.management.feeWallet}`);
+                    } else {
+                        console.log(`❌ [FEE] Gagal mengirim fee: ${feeRes.error}`);
+                    }
+                }
+            } catch (feeErr) {
+                console.log(`❌ [FEE] Error saat proses pengiriman fee: ${feeErr.message}`);
+            }
+        }
+
         await notifyClose({ pair, pnlPct, pnlUsd });
         return true;
 
@@ -281,15 +313,14 @@ export async function runManagementCycle({ silent = false } = {}) {
           }
       } 
       else if (tpMode === "trailing") {
-          // Trailing: Lock 5% at 8% PnL. If PnL > 8%, lock floor at PnL - 3%
-          let activation = tracked?.trailingActivationPct || 8;
+          // Trailing: Lock initial profit at activation. If PnL goes higher, lock floor at PnL - dropPct
+          let activation = tracked?.trailingActivationPct || config.management.trailingTriggerPct || 3;
+          let dropPct = config.management.trailingDropPct || 1.5;
           
           if (pnl >= activation) {
-              // Logic: At 8% (activation), lock 5%. 
-              // If PnL is higher (e.g. 10%), lock at PnL - 3% (e.g. 7%).
-              // We take the max of 5% and (PnL - 3%).
-              const trailingFloor = Math.floor(pnl - 3);
-              const newLockedPnl = Math.max(5, trailingFloor);
+              const trailingFloor = Math.floor((pnl - dropPct) * 100) / 100;
+              const initialLock = Math.max(0.5, activation - dropPct);
+              const newLockedPnl = Math.max(initialLock, trailingFloor);
 
               if (newLockedPnl > currentLockedPnl) {
                   currentLockedPnl = newLockedPnl;
@@ -309,7 +340,7 @@ export async function runManagementCycle({ silent = false } = {}) {
           if (pnl >= 5) {
               try {
                   const indicatorRes = await confirmIndicatorPreset({
-                      mint: pos.baseMint || pos.token_x,
+                      mint: pos.base_mint || pos.token_x,
                       side: "exit",
                       preset: "bollinger_reversion",
                       intervals: ["15_MINUTE"]
@@ -325,7 +356,29 @@ export async function runManagementCycle({ silent = false } = {}) {
           }
       }
 
-      report += `- ${pos.pair}: PnL ${pnl.toFixed(2)}% [Mode: ${tpMode.toUpperCase()}${tpMode === 'trailing' ? ' Floor: '+currentLockedPnl+'%' : ''}]\n`;
+      // ─── Health Check (Slow Rug Detection) ───
+      const mintAddr = pos.base_mint || pos.token_x || pos.baseMint;
+      const health = await checkTokenHealth(mintAddr);
+      if (health.score <= 40) {
+          // CRITICAL: Send alert but DO NOT AUTO-CLOSE
+          const healthMsg = `🚨 *CRITICAL HEALTH ALERT: ${pos.pair}*\nStatus: ${health.status}\nScore: ${health.score}/100\nReasons: ${health.reasons.join(", ")}\n\n*Note: Auto-Close is disabled. Please check manually!*`;
+          const warnKey = `health_crit_${pos.position}`;
+          if (!pendingOrders.has(warnKey)) {
+              await notifyError(healthMsg);
+              pendingOrders.set(warnKey, { timestamp: Date.now() });
+              setTimeout(() => pendingOrders.delete(warnKey), 1800000); // 30 mins cooldown
+          }
+      } else if (health.score <= 70) {
+          // Warning notification
+          const warnKey = `health_warn_${pos.position}`;
+          if (!pendingOrders.has(warnKey)) {
+              await notifyError(`⚠️ *TOKEN HEALTH WARNING: ${pos.pair}*\nStatus: ${health.status}\nScore: ${health.score}/100\nReasons: ${health.reasons.join(", ")}`);
+              pendingOrders.set(warnKey, { timestamp: Date.now() });
+              setTimeout(() => pendingOrders.delete(warnKey), 3600000); // 1 hour cooldown
+          }
+      }
+
+      report += `- ${pos.pair}: PnL ${pnl.toFixed(2)}% [Health: ${health.score}] [Mode: ${tpMode.toUpperCase()}${tpMode === 'trailing' ? ' Floor: '+currentLockedPnl+'%' : ''}]\n`;
 
       // ─── Stop Loss & OOR ───
       if (pnl <= sl) {
@@ -349,8 +402,8 @@ export async function runManagementCycle({ silent = false } = {}) {
 /**
  * Eksekusi Deploy dengan perhitungan Bin Range berdasarkan Fibo
  */
-async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, autoSwap = false, baseMint = null, bottomLevel = 0.786, autoReentry = false, entryPrice = null) {
-    console.log(`🚀 MENGEKSEKUSI LP FIBONACCI...`);
+async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, autoSwap = false, baseMint = null, bottomLevel = 0.786, autoReentry = false, entryPrice = null, mode = "fibo") {
+    console.log(`🚀 MENGEKSEKUSI LP ${mode.toUpperCase()}...`);
     
     // --- FINAL BALANCE CHECK ---
     const balances = await getWalletBalances();
@@ -365,39 +418,38 @@ async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, auto
 
     const binStep = Number(pool.bin_step || pool.binStep || 100);
     
-    // 1. Tentukan Target Range (Memprioritaskan Fibo Bottom)
-    // Kita gunakan bottomPrice Fibo sebagai target utama jaring.
-    // Kita hanya menyesuaikan jika harganya sudah jebol atau range-nya terlalu sempit.
-    
+    // 1. Tentukan Target Range
     let targetPrice = bottomPrice;
-    const minSafetyDrop = 0.15; // Minimal jaring 15% drop
-    const maxSafetyDrop = 0.85; // Maksimal jaring 85% drop
-    
-    const currentDrop = (currentPrice - targetPrice) / currentPrice;
 
-    if (targetPrice >= currentPrice) {
-        // KASUS: Harga saat ini sudah di bawah Fibo Bottom.
-        // Kita gunakan ATL asli sebagai target bawah, atau minimal 20% drop dari harga sekarang agar jaring tidak kosong.
-        console.log(`💡 Note: Harga saat ini sudah di bawah Fibo Bottom (${bottomPrice.toFixed(10)}).`);
-        targetPrice = Math.min(bottomPrice, currentPrice * 0.80);
-        console.log(`🎯 Menyesuaikan jaring akumulasi ke: ${targetPrice.toFixed(10)} SOL`);
-    } 
-    else if (currentDrop < minSafetyDrop) {
-        // Kasus: Jarak ke Bottom Fibo terlalu sempit. Kita lebarkan sedikit agar ada ruang akumulasi.
-        console.log(`💡 Note: Range Fibo ke Bottom terlalu sempit (${(currentDrop*100).toFixed(2)}%). Memperlebar jaring ke 20% drop.`);
-        targetPrice = currentPrice * 0.80;
-    }
-    else if (currentDrop > maxSafetyDrop) {
-        // Kasus: Jarak ke Bottom Fibo terlalu jauh (> 85%). Kita batasi agar tidak error rent.
-        console.log(`💡 Note: Range Fibo ke Bottom terlalu jauh. Membatasi ke 85% drop untuk stabilitas.`);
-        targetPrice = currentPrice * 0.15;
+    if (mode === "fibo") {
+        const minSafetyDrop = 0.15; // Minimal jaring 15% drop
+        const maxSafetyDrop = 0.85; // Maksimal jaring 85% drop
+        
+        const currentDrop = (currentPrice - targetPrice) / currentPrice;
+
+        if (targetPrice >= currentPrice) {
+            console.log(`💡 Note: Harga saat ini sudah di bawah Fibo Bottom (${bottomPrice.toFixed(10)}).`);
+            targetPrice = Math.min(bottomPrice, currentPrice * 0.80);
+            console.log(`🎯 Menyesuaikan jaring akumulasi ke: ${targetPrice.toFixed(10)} SOL`);
+        } 
+        else if (currentDrop < minSafetyDrop) {
+            console.log(`💡 Note: Range Fibo ke Bottom terlalu sempit (${(currentDrop*100).toFixed(2)}%). Memperlebar jaring ke 20% drop.`);
+            targetPrice = currentPrice * 0.80;
+        }
+        else if (currentDrop > maxSafetyDrop) {
+            console.log(`💡 Note: Range Fibo ke Bottom terlalu jauh. Membatasi ke 85% drop untuk stabilitas.`);
+            targetPrice = currentPrice * 0.15;
+        }
+    } else {
+        // Mode Volatility: Gunakan bottomPrice apa adanya (sudah dihitung di manualVolDeploy)
+        console.log(`📊 Mode Volatility: Menggunakan range murni dari data volatilitas.`);
     }
 
     const priceRatio = currentPrice / targetPrice;
     const binsNeeded = Math.abs(Math.round(Math.log(priceRatio) / (binStep * Math.log(1.0001))));
     
-    // Batasi jumlah bin: minimal 20 bin, maksimal 450 bin.
-    let finalBins = Math.max(20, Math.min(450, binsNeeded));
+    // Batasi jumlah bin: minimal 10 bin, maksimal 450 bin.
+    let finalBins = Math.max(10, Math.min(450, binsNeeded));
 
     // 2. Tentukan Strategi Berdasarkan Lebar Jaring
     const rangePct = Math.abs((currentPrice - targetPrice) / currentPrice * 100);
@@ -425,7 +477,7 @@ async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, auto
     console.log(`- Bin Step: ${binStep} | AS Mode: ${autoSwap ? 'ON' : 'OFF'}`);
     console.log(`-----------------------------------------------`);
 
-    let parentPositionAddress = null;
+    let combinedPositionAddress = null;
 
     for (const d of deployments) {
         const deployAmount = amountSol * d.pct;
@@ -438,14 +490,9 @@ async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, auto
                 strategy: d.strategy,
                 bins_below: finalBins,
                 bins_above: 0,
-                volatility: 100
+                volatility: 100,
+                position_address: combinedPositionAddress // Use existing position if available
             };
-
-            // Jika ini adalah deployment kedua dalam satu operasi (Hybrid), tambahkan ke posisi yang sama
-            if (parentPositionAddress) {
-                deployParams.position_address = parentPositionAddress;
-                console.log(`🔗 Menambahkan likuiditas ke posisi utama: ${parentPositionAddress}`);
-            }
 
             const res = await deployPosition(deployParams);
 
@@ -453,23 +500,22 @@ async function executeFibDeploy(pool, amountSol, currentPrice, bottomPrice, auto
                 if (res.dry_run) {
                     console.log(`⚠️  DRY RUN BERHASIL untuk ${d.label}`);
                 } else {
-                    console.log(`✅ BERHASIL! ${parentPositionAddress ? 'Likuiditas ditambahkan ke' : 'Posisi dibuka'}: ${res.position}`);
+                    console.log(`✅ BERHASIL! ${combinedPositionAddress ? 'Likuiditas ditambahkan ke' : 'Posisi dibuka'}: ${res.position}`);
                     
-                    if (!parentPositionAddress) {
-                        parentPositionAddress = res.position; // Simpan untuk deployment berikutnya (Spot)
+                    if (!combinedPositionAddress) {
+                        combinedPositionAddress = res.position;
+                        const finalBaseMint = typeof baseMint === 'string' ? baseMint : (baseMint?.mint || baseMint?.address || (typeof pool.token_x === 'string' ? pool.token_x : pool.token_x?.mint));
+
                         trackPosition(res.position, { 
                             pool: pool.pool, 
                             pair: pool.name, 
                             autoSwap,
                             autoReentry,
-                            tpMode: "static", // Default TP 6%
-                            baseMint: baseMint || pool.token_x,
-                            amountSol: amountSol // Track TOTAL amount since it's one position
+                            tpMode: "static",
+                            baseMint: finalBaseMint,
+                            amountSol: amountSol // Track total intended SOL
                         });
-                        notifyDeploy({ pair: `${pool.name} (Hybrid Init: ${d.strategy})`, amountSol: deployAmount, position: res.position });
-                    } else {
-                        // Notifikasi untuk penambahan likuiditas
-                        notifyDeploy({ pair: `${pool.name} (Hybrid Add: ${d.strategy})`, amountSol: deployAmount, position: res.position });
+                        notifyDeploy({ pair: `${pool.name} (${mode.toUpperCase()} Hybrid)`, amountSol: amountSol, position: res.position });
                     }
                 }
             } else {
@@ -709,7 +755,7 @@ async function manualDeploy(ca, amountSol, manualAth = null, manualAtl = null, a
 
     const officialBinStep = Number(detailJson.pool_config?.bin_step || detailJson.bin_step || bestPool.bin_step);
     const currentPrice = Number(activeBin.price) || Number(detailJson.current_price || 0);
-    const baseMint = detailJson.token_x?.address || detailJson.tokenX || bestPool.token_x;
+    const baseMint = detailJson.token_x?.address || detailJson.tokenX || (typeof bestPool.token_x === 'string' ? bestPool.token_x : bestPool.token_x?.mint);
 
     bestPool.bin_step = officialBinStep;
 
@@ -806,6 +852,36 @@ function startREPL() {
         else await manualDeploy(ca, amt, null, null, isAS, isAR);
         break;
 
+      case "vol":
+      case "/vol": {
+        const volCa = parts[1];
+        let volAmt = 0.001;
+        let volIsAS = false;
+        let volM = 5;
+        let volV = 0;
+        
+        for (let i = 2; i < parts.length; i++) {
+            const p = parts[i].toUpperCase();
+            if (p === "AS") volIsAS = true;
+            else if (p.startsWith("M")) {
+                const m = parseInt(p.slice(1));
+                if (!isNaN(m)) volM = m;
+            }
+            else if (p.startsWith("V")) {
+                const v = parseFloat(p.slice(1));
+                if (!isNaN(v)) volV = v;
+            }
+            else {
+                const val = parseFloat(p);
+                if (!isNaN(val)) volAmt = val;
+            }
+        }
+
+        if (!volCa) console.log("Usage: vol <CA> [amount] [AS] [Mx] [Vx]");
+        else await manualVolDeploy(volCa, volAmt, volIsAS, volM, volV);
+        break;
+      }
+
       case "status":
       case "/status":
         const balances = await getWalletBalances();
@@ -825,13 +901,21 @@ function startREPL() {
         const posData = await getMyPositions({ force: true });
         console.log(`📊 Active Positions: ${posData.total_positions}`);
         const unit = config.management.solMode ? "SOL" : "USD";
-        posData.positions?.forEach((p, i) => {
+        
+        for (let i = 0; i < (posData.positions?.length || 0); i++) {
+          const p = posData.positions[i];
           const tracked = getTrackedPosition(p.position);
           const tpMode = (tracked?.tpMode || "static").toUpperCase();
           const arStatus = tracked?.autoReentry ? 'ON' : 'OFF';
           const pnlVal = p.pnl_usd || 0;
-          console.log(`${i+1}. ${p.pair} | Range: ${p.in_range ? 'IN' : 'OOR'} | Age: ${p.age_minutes}m | PnL: ${pnlVal.toFixed(4)} ${unit} (${p.pnl_pct?.toFixed(2) || 0}%) | AS: ${tracked?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStatus} | TP: ${tpMode}`);
-        });
+          
+          // Fetch health score for display
+          const mintAddr = p.base_mint || p.token_x || p.baseMint;
+          const health = await checkTokenHealth(mintAddr);
+          const healthDisp = health.score !== undefined ? `[Health: ${health.score}]` : "[Health: --]";
+          
+          console.log(`${i+1}. ${p.pair} | ${healthDisp} | Range: ${p.in_range ? 'IN' : 'OOR'} | PnL: ${pnlVal.toFixed(4)} ${unit} (${p.pnl_pct?.toFixed(2) || 0}%) | AS: ${tracked?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStatus} | TP: ${tpMode}`);
+        }
         break;
 
       case "tp":
@@ -977,6 +1061,7 @@ function startREPL() {
       case "help":
         console.log("\nCommands:");
         console.log("  lp <CA> [amount] [AS] [AR] - Buka LP Fibonacci (AS: Auto-Swap, AR: Auto-Reentry)");
+        console.log("  vol <CA> [amount] [AS] [Mx] [Vx] - Buka LP Volatility (M: Multiplier, V: Fixed Vol)");
         console.log("  lo <CA> [amount] [BA/Spot] - Buka Limit Order Fibonacci");
         console.log("  status                      - Cek saldo dan posisi");
         console.log("  set <tp/sl> <value>         - Atur global TP/SL (%)");
@@ -995,6 +1080,94 @@ function startREPL() {
     }
     prompt();
   });
+}
+
+/**
+ * Fungsi Deploy Manual via CA dengan Strategi Volatility (Live Dynamic Range)
+ */
+async function manualVolDeploy(ca, amountSol, autoSwap = false, multiplier = 5, liveVol = 0) {
+  try {
+    console.log(`\n📊 MENGGUNAKAN STRATEGI VOLATILITY (Pure Dynamic Range)`);
+    
+    const balances = await getWalletBalances();
+    if (balances.sol < amountSol + 0.01) {
+        console.log(`❌ GAGAL: Saldo SOL tidak cukup.`);
+        return;
+    }
+
+    console.log(`🔎 CA: ${ca}`);
+    const searchResult = await searchPools({ query: ca, limit: 10 });
+    const solPools = (searchResult.pools || []).filter(p => p.name.includes("-SOL") || p.name.includes("SOL-"));
+    if (solPools.length === 0) {
+        console.log("❌ Tidak ditemukan pool SOL.");
+        return;
+    }
+
+    const bestPool = solPools[0];
+    
+    console.log(`📡 Memasuki kolam ${bestPool.pool.slice(0,8)} untuk mengambil data live...`);
+    
+    // Unified Fetch from Discovery API using confirmed surgical precision method
+    const surgicalUrl = `https://pool-discovery-api.datapi.meteora.ag/pools?page_size=1&filter_by=${encodeURIComponent(`pool_address=${bestPool.pool}`)}`;
+    
+    const [discoveryRes, activeBin] = await Promise.all([
+        fetchWithLog(surgicalUrl, "Meteora Discovery Precision").catch(() => ({ data: [] })),
+        getActiveBin({ pool_address: bestPool.pool })
+    ]);
+
+    let poolDetail = discoveryRes.data?.[0];
+    
+    // Fallback deep search if surgical failed (highly unlikely for a known pool address)
+    if (!poolDetail) {
+        console.log("⚠️ Surgical precision data missing, attempting deep CA search...");
+        const deepTokenRes = await fetchWithLog(`https://pool-discovery-api.datapi.meteora.ag/pools?search_term=${ca}&limit=100`, "Meteora Discovery CA").catch(() => ({ data: [] }));
+        poolDetail = deepTokenRes.data?.find(p => p.pool_address === bestPool.pool);
+    }
+
+    if (!poolDetail) {
+        console.log("❌ Gagal menemukan detail kolam di Discovery API.");
+    }
+
+    const officialBinStep = Number(poolDetail?.dlmm_params?.bin_step || poolDetail?.bin_step || bestPool.bin_step || 100);
+    const baseMint = poolDetail?.token_x?.address || (typeof bestPool.token_x === 'string' ? bestPool.token_x : bestPool.token_x?.mint);
+    const dynamicFee = Number(poolDetail?.dynamic_fee_pct || 0);
+
+    // Final Volatility Decision
+    let vol = 2.0;
+    if (liveVol > 0) {
+        vol = liveVol;
+    } else if (poolDetail?.volatility && Number(poolDetail.volatility) > 0) {
+        vol = Number(poolDetail.volatility);
+    } else if (dynamicFee > 0) {
+        vol = Math.max(2.0, dynamicFee);
+        console.log(`💡 Volatility murni 0/missing, menggunakan Dynamic Fee (${dynamicFee.toFixed(2)}%) sebagai proxy.`);
+    } else {
+        console.log("⚠️ Data Volatility tidak tersedia di API. Menggunakan fallback aman 2.0");
+    }
+    
+    bestPool.bin_step = officialBinStep;
+    bestPool.name = poolDetail?.name || bestPool.name;
+    const currentPrice = Number(activeBin.price) || Number(poolDetail?.pool_price || 0);
+
+    // 2. Hitung Jaring: Volatilitas * Multiplier
+    const rangePct = Math.min(85, vol * multiplier); 
+    const bottomPrice = currentPrice * (1 - (rangePct / 100));
+
+    console.log(`🚀 VOL STRATEGY:`);
+    console.log(`- Pool: ${bestPool.name}`);
+    console.log(`- Entry: ${currentPrice.toFixed(10)} SOL`);
+    console.log(`- Volatility: ${vol.toFixed(2)} | Multiplier: x${multiplier}`);
+    console.log(`- Dynamic Fee: ${dynamicFee.toFixed(2)}%`);
+    console.log(`- Bin Step: ${officialBinStep}`);
+    console.log(`- Range Jaring: ${rangePct.toFixed(2)}% (Murni dinamis)`);
+    console.log(`- Target Bawah: ${bottomPrice.toFixed(10)} SOL`);
+
+    // 3. Eksekusi Deploy
+    await executeFibDeploy(bestPool, amountSol, currentPrice, bottomPrice, autoSwap, baseMint, 0, false, currentPrice, "volatility");
+
+  } catch (err) {
+    console.log(`\n❌ ERROR: ${err.message}`);
+  }
 }
 
 /**
@@ -1017,35 +1190,60 @@ async function main() {
 
   initTelegramBot({
     status: async () => {
-        const balances = await getWalletBalances();
-        const posData = await getMyPositions({ force: true });
-        const unit = config.management.solMode ? "SOL" : "USD";
-        
-        let msg = `💰 *Balance:* ${balances.sol.toFixed(4)} SOL\n\n`;
+        try {
+            console.log("📊 [TG] Generating status report...");
+            const balances = await getWalletBalances();
+            console.log(`📊 [TG] Balances fetched: ${balances.sol.toFixed(4)} SOL`);
+            
+            const posData = await getMyPositions({ force: true });
+            console.log(`📊 [TG] Positions fetched: ${posData.total_positions}`);
+            
+            const unit = config.management.solMode ? "SOL" : "USD";
+            let msg = `💰 *Balance:* ${balances.sol.toFixed(4)} SOL\n\n`;
 
-        // 1. Pending Orders
-        if (pendingOrders.size > 0) {
-            msg += `⏳ *Pending Orders (${pendingOrders.size}):*\n`;
-            for (const [ca, order] of pendingOrders.entries()) {
-                if (!order.isDeployed) {
-                    msg += `- ${order.poolName}: Target < ${order.entryPrice.toFixed(10)} SOL | Amt: ${order.amountSol} SOL\n`;
+            // 1. Pending Orders
+            if (pendingOrders.size > 0) {
+                msg += `⏳ *Pending Orders (${pendingOrders.size}):*\n`;
+                for (const [ca, order] of pendingOrders.entries()) {
+                    if (!order.isDeployed) {
+                        msg += `- ${order.poolName}: Target < ${order.entryPrice.toFixed(10)} SOL | Amt: ${order.amountSol} SOL\n`;
+                    }
+                }
+                msg += `\n`;
+            }
+
+            // 2. Active Positions
+            msg += `📊 *Active Positions (${posData.total_positions}):*\n`;
+            for (const p of (posData.positions || [])) {
+                try {
+                    const tr = getTrackedPosition(p.position);
+                    const tpMode = (tr?.tpMode || "static").toUpperCase();
+                    const arStat = tr?.autoReentry ? '✅ ON' : '❌ OFF';
+                    const isLO = tr?.isLimitOrder ? ' (LO)' : '';
+                    const pnlVal = p.pnl_usd || 0;
+                    
+                    // Fix: Try all possible address properties
+                    const mintAddr = p.base_mint || p.token_x || p.baseMint || p.token_x_address;
+
+                    let healthDisp = "[H: --]";
+                    if (mintAddr && mintAddr !== "So11111111111111111111111111111111111111112") {
+                        const health = await checkTokenHealth(mintAddr).catch(() => ({ score: undefined }));
+                        healthDisp = health.score !== undefined ? `[H: ${health.score}]` : "[H: ERR]";
+                    }
+
+                    msg += `${healthDisp} ${p.pair}${isLO} | ${p.in_range ? '✅ IN' : '⚠️ OOR'} | ${pnlVal.toFixed(4)} ${unit} (${(p.pnl_pct || 0).toFixed(2)}%) | AS: ${tr?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStat}\n`;
+                } catch (posErr) {
+                    console.error(`❌ [TG] Error processing position ${p.position}:`, posErr.message);
+                    msg += `❌ Error processing ${p.pair || p.position.slice(0,8)}\n`;
                 }
             }
-            msg += `\n`;
+            
+            console.log("✅ [TG] Status report generated successfully.");
+            return msg;
+        } catch (err) {
+            console.error("❌ [TG] Fatal error in status handler:", err);
+            return `❌ *Error:* ${err.message}`;
         }
-
-        // 2. Active Positions
-        msg += `📊 *Active Positions (${posData.total_positions}):*\n`;
-        posData.positions?.forEach((p, i) => {
-            const tr = getTrackedPosition(p.position);
-            const tpMode = (tr?.tpMode || "static").toUpperCase();
-            const arStat = tr?.autoReentry ? '✅ ON' : '❌ OFF';
-            const isLO = tr?.isLimitOrder ? ' (LO)' : '';
-            const pnlVal = p.pnl_usd || 0;
-            msg += `${i+1}. ${p.pair}${isLO} | ${p.in_range ? '✅ IN' : '⚠️ OOR'} | ${pnlVal.toFixed(4)} ${unit} (${p.pnl_pct?.toFixed(2)}%) | AS: ${tr?.autoSwap ? 'ON' : 'OFF'} | AR: ${arStat} | TP: ${tpMode}\n`;
-        });
-        
-        return msg;
     },
     lo: async (ca, amtAndMode) => {
         const parts = String(amtAndMode).split(" ");
@@ -1084,6 +1282,32 @@ async function main() {
         }
 
         await manualDeploy(ca, amt, null, null, isAS, isAR);
+    },
+    lp_vol: async (ca, amtStr) => {
+        const parts = String(amtStr).split(" ");
+        let amt = 0.001;
+        let isAS = false;
+        let multiplier = 5;
+        let liveVol = 0;
+        
+        for (const part of parts) {
+            const p = part.toUpperCase();
+            if (p === "AS") isAS = true;
+            else if (p.startsWith("M")) {
+                const m = parseInt(p.slice(1));
+                if (!isNaN(m)) multiplier = m;
+            }
+            else if (p.startsWith("V")) {
+                const v = parseFloat(p.slice(1));
+                if (!isNaN(v)) liveVol = v;
+            }
+            else if (part.trim() !== "") {
+                const parsed = parseFloat(part.replace(",", "."));
+                if (!isNaN(parsed)) amt = parsed;
+            }
+        }
+
+        await manualVolDeploy(ca, amt, isAS, multiplier, liveVol);
     },
     close: async (idx) => {
         const index = parseInt(idx) - 1;
@@ -1181,7 +1405,31 @@ async function main() {
         return `⚙️ *CURRENT SETTINGS:*\n` +
                `- Global TP: ${config.management.takeProfitPct}%\n` +
                `- Global SL: ${config.management.stopLossPct}%\n` +
-               `- Max SOL Cap: ${config.management.globalMaxCapSol} SOL`;
+               `- Max SOL Cap: ${config.management.globalMaxCapSol} SOL\n` +
+               `- Profit Fee: ${config.management.feePct}% (${config.management.feeWallet ? 'Active: ' + config.management.feeWallet.slice(0,8) + '...' : 'Disabled: No Wallet'})`;
+    },
+    top: async () => {
+        const topPools = await getMeteoraTopPools(10);
+        if (topPools.length === 0) return "❌ Tidak ada koin yang memenuhi kriteria ALPHA super ketat saat ini.";
+        
+        let msg = "🔥 *Elite Alpha DLMM Pools:*\n\n";
+        topPools.forEach((p, i) => {
+            const mcap = Number(p.mcap || 0);
+            const vol = Number(p.vol || 0);
+            const yld = Number(p.yield || 0);
+            const score = Number(p.score || 0);
+
+            const mcapDisp = mcap > 0 ? `$${(mcap/1000).toFixed(0)}K` : "$???";
+            const volDisp = vol > 0 ? `$${(vol/1000).toFixed(0)}K` : "$0";
+            const yieldDisp = yld > 0 ? `${yld.toFixed(1)}%` : "0%";
+            
+            msg += `${i+1}. *${p.name || "Unknown"}*\n` +
+                   `   CA: \`${p.mint || "???"}\`\n` +
+                   `   MCap: ${mcapDisp} | Vol 24h: ${volDisp}\n` +
+                   `   Yield: ${yieldDisp} | Organic: ${score}/100\n\n`;
+        });
+        msg += "Gunakan perintah \`/lp <CA> <Amount>\` untuk masuk.";
+        return msg;
     }
   });
 

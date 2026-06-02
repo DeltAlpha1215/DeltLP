@@ -60,13 +60,15 @@ export async function fetchTokenInfo_GMGN(ca) {
         // Hitung Rasio SOL/USD koin ini untuk konversi history nanti
         const solPerUsd = (priceSol > 0 && priceUsd > 0) ? (priceSol / priceUsd) : (1 / 150);
 
-        // Ambil ATH Market Cap (USD) dari berbagai kemungkinan field
-        let athMcapUsd = Number(data.ath_market_cap || data.ath_mc || data.dev?.ath_token_info?.ath_mc || 0);
-        if (!athMcapUsd && athPriceUsd > 0) {
+        // Ambil ATH Market Cap (USD) LANGSUNG dari data koin ini (Hapus dev.ath_token_info.ath_mc karena itu koin lain si dev)
+        let athMcapUsd = Number(data.ath_market_cap || data.ath_mc || 0);
+        
+        // Jika field ATH MCap kosong, hitung sendiri dari ATH Price koin ini * Supply
+        if (!athMcapUsd && athPriceUsd > 0 && supply > 0) {
             athMcapUsd = athPriceUsd * supply;
         }
 
-        // Hitung ATH dalam SOL (Gunakan data asli jika ada, atau konversi)
+        // Hitung ATH dalam SOL
         const athPriceSol = (athPriceUsd > 0 && priceUsd > 0) 
             ? (athPriceUsd / priceUsd) * priceSol 
             : (athPriceUsd * solPerUsd);

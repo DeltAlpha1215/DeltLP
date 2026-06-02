@@ -16,20 +16,24 @@ import { log } from "../logger.js";
 import { normalizeMint } from "./wallet.js";
 import { agentDeltLPJson, getAgentIdForRequests, getAgentDeltLPHeaders } from "./agent-deltlp.js";
 
-// Dummy stubs for deleted dependencies
-const trackPosition = () => {};
-const markOutOfRange = () => {};
-const markInRange = () => {};
+import { 
+  getTrackedPosition, 
+  trackPosition, 
+  untrackPosition, 
+  markOutOfRange,
+  markInRange,
+  minutesOutOfRange
+} from "../state.js";
+
+// Dummy stubs for remaining deleted dependencies
 const recordClaim = () => {};
 const recordClose = () => {};
-const getTrackedPosition = () => null;
-const minutesOutOfRange = () => 0;
-const syncOpenPositions = () => {};
-const recordPerformance = async () => {};
 const isBaseMintOnCooldown = () => false;
 const isPoolOnCooldown = () => false;
 const appendDecision = () => {};
 const getAndClearStagedSignals = () => null;
+const syncOpenPositions = () => {};
+const recordPerformance = async () => {};
 
 
 // ─── Lazy SDK loader ───────────────────────────────────────────
@@ -694,8 +698,7 @@ export async function deployPosition({
         const signalSnapshot = config.darwin?.enabled
           ? getAndClearStagedSignals(pool_address, baseMint)
           : null;
-        trackPosition({
-          position: positionAddress,
+        trackPosition(positionAddress, {
           pool: pool_address,
           pool_name,
           strategy: activeStrategy,
@@ -848,8 +851,7 @@ export async function deployPosition({
         const signalSnapshot = config.darwin?.enabled
           ? getAndClearStagedSignals(pool_address, baseMint)
           : null;
-        trackPosition({
-          position: targetPositionPubKey.toString(),
+        trackPosition(targetPositionPubKey.toString(), {
           pool: pool_address,
           pool_name,
           strategy: activeStrategy,
@@ -935,7 +937,7 @@ async function fetchLpAgentOpenPositions(walletAddress) {
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      log("lpagent_api", `HTTP ${res.status} for owner ${walletAddress.slice(0, 8)}: ${body.slice(0, 160)}`);
+      log("lpagent_api", `HTTP ${res.status} for owner ${walletAddress?.slice(0, 8) || "unknown"}: ${body.slice(0, 160)}`);
       return {};
     }
     const data = await res.json();
@@ -947,7 +949,7 @@ async function fetchLpAgentOpenPositions(walletAddress) {
     }
     return byAddress;
   } catch (e) {
-    log("lpagent_api", `Fetch error for owner ${walletAddress.slice(0, 8)}: ${e.message}`);
+    log("lpagent_api", `Fetch error for owner ${walletAddress?.slice(0, 8) || "unknown"}: ${e.message}`);
     return {};
   }
 }
@@ -959,13 +961,13 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
     const res = await fetch(url);
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      log("pnl_api", `HTTP ${res.status} for pool ${poolAddress.slice(0, 8)}: ${body.slice(0, 120)}`);
+      log("pnl_api", `HTTP ${res.status} for pool ${poolAddress?.slice(0, 8) || "unknown"}: ${body.slice(0, 120)}`);
       return {};
     }
     const data = await res.json();
     const positions = data.positions || data.data || [];
     if (positions.length === 0) {
-      log("pnl_api", `No positions returned for pool ${poolAddress.slice(0, 8)} — keys: ${Object.keys(data).join(", ")}`);
+      log("pnl_api", `No positions returned for pool ${poolAddress?.slice(0, 8) || "unknown"} — keys: ${Object.keys(data).join(", ")}`);
     }
     const byAddress = {};
     for (const p of positions) {
