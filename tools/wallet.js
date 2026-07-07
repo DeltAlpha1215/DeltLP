@@ -8,6 +8,8 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import bs58 from "bs58";
+import fs from "fs";
+import path from "path";
 import { log } from "../logger.js";
 import { config } from "../config.js";
 
@@ -25,6 +27,34 @@ function getWallet() {
     _wallet = Keypair.fromSecretKey(bs58.decode(process.env.WALLET_PRIVATE_KEY));
   }
   return _wallet;
+}
+
+export function updateWalletKey(privateKeyBase58) {
+  try {
+    const decoded = bs58.decode(privateKeyBase58);
+    if (decoded.length !== 64) {
+      return { success: false, error: "Private key length must be 64 bytes" };
+    }
+    const keypair = Keypair.fromSecretKey(decoded);
+    _wallet = keypair;
+    process.env.WALLET_PRIVATE_KEY = privateKeyBase58;
+    
+    // Also write it back to .env
+    const envPath = path.join(process.cwd(), ".env");
+    if (fs.existsSync(envPath)) {
+      let envContent = fs.readFileSync(envPath, "utf8");
+      const regex = /^WALLET_PRIVATE_KEY=.*$/m;
+      if (regex.test(envContent)) {
+        envContent = envContent.replace(regex, `WALLET_PRIVATE_KEY=${privateKeyBase58}`);
+      } else {
+        envContent += `\nWALLET_PRIVATE_KEY=${privateKeyBase58}\n`;
+      }
+      fs.writeFileSync(envPath, envContent, "utf8");
+    }
+    return { success: true, publicKey: keypair.publicKey.toString() };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
 }
 
 const JUPITER_PRICE_API = "https://api.jup.ag/price/v3";

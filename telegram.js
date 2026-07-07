@@ -17,6 +17,9 @@ let currentAdminId = process.env.TELEGRAM_CHAT_ID || null;
 let _offset = 0;
 let _isPolling = false;
 
+// State management for interactive editing
+const userState = new Map(); // chatId -> { action: 'editing_tp' | 'editing_sl' | 'editing_cap' }
+
 // ─── Persistence ────────────────────────────────────────────────
 function loadState() {
   try {
@@ -114,6 +117,22 @@ async function sendToChat(chatId, text, replyMarkup = null) {
 }
 
 /**
+ * Delete a message from the Telegram chat
+ */
+async function deleteTelegramMessage(chatId, messageId) {
+    if (!BASE || !chatId || !messageId) return;
+    try {
+        await fetch(`${BASE}/deleteMessage`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ chat_id: chatId, message_id: messageId })
+        });
+    } catch (e) {
+        log("telegram_error", `Delete message failed: ${e.message}`);
+    }
+}
+
+/**
  * Broadcast to all known admins (Notifications)
  */
 async function broadcast(text) {
@@ -177,13 +196,14 @@ export async function initTelegramBot(handlers = {}) {
           return;
       }
       
-      if (json.result.length > 0) {
-          log("info", `Received ${json.result.length} updates. Data: ${JSON.stringify(json.result)}`);
+      const updates = json.result || [];
+      if (updates.length > 0) {
+          log("info", `Received ${updates.length} updates.`);
       }
 
-      if (!json.result.length) return;
+      if (!updates.length) return;
 
-      for (const update of json.result) {
+      for (const update of updates) {
         if (processedUpdates.has(update.update_id)) continue;
         processedUpdates.add(update.update_id);
         if (processedUpdates.size > 1000) {
@@ -229,7 +249,35 @@ export async function initTelegramBot(handlers = {}) {
                     await sendToChat(cid, await handlers.top());
                 }
             } else if (data === "m_c") {
-                if (handlers.config) await sendToChat(cid, await handlers.config());
+                if (handlers.config) {
+                    const res = await handlers.config();
+                    if (typeof res === "object") await sendToChat(cid, res.text, res.buttons);
+                    else await sendToChat(cid, res);
+                }
+            } else if (data === "c_fee_on") {
+                if (handlers.set) await handlers.set("fee", "on");
+                if (handlers.config) {
+                    const res = await handlers.config();
+                    await sendToChat(cid, res.text, res.buttons);
+                }
+            } else if (data === "c_fee_off") {
+                if (handlers.set) await handlers.set("fee", "off");
+                if (handlers.config) {
+                    const res = await handlers.config();
+                    await sendToChat(cid, res.text, res.buttons);
+                }
+            } else if (data === "c_set_tp") {
+                userState.set(cid, { action: "editing_tp" });
+                await sendToChat(cid, "📝 Masukkan nilai *Global Take Profit* baru (%):\n(Contoh: `10` untuk 10%)");
+            } else if (data === "c_set_sl") {
+                userState.set(cid, { action: "editing_sl" });
+                await sendToChat(cid, "📝 Masukkan nilai *Global Stop Loss* baru (%):\n(Contoh: `-15` untuk -15%)");
+            } else if (data === "c_set_cap") {
+                userState.set(cid, { action: "editing_cap" });
+                await sendToChat(cid, "📝 Masukkan nilai *Max SOL Cap* baru (SOL):\n(Contoh: `1.5`) \n\n_Batas total modal yang boleh digunakan bot._");
+            } else if (data === "c_set_wallet") {
+                userState.set(cid, { action: "editing_wallet" });
+                await sendToChat(cid, "🔑 *Masukkan Private Key Solana (Base58)* baru:\n\n⚠️ _Security note: Pesan Anda akan langsung dihapus otomatis oleh bot setelah dibaca demi keamanan._");
             } else if (data === "m_m") {
                 const mm = { inline_keyboard: [[{ text: "🎯 Open Position", callback_data: "m_o" }, { text: "📊 Status", callback_data: "m_s" }], [{ text: "🔥 Top Pools", callback_data: "m_t" }, { text: "⚙️ Config", callback_data: "m_c" }]] };
                 await sendToChat(cid, "🤖 *DeltLP Interactive Menu*", mm);
@@ -263,10 +311,61 @@ export async function initTelegramBot(handlers = {}) {
         if (!msg || !msg.text) continue;
         
         const text = msg.text.trim();
-        log("info", `Telegram Message from ${cid} (@${msg.from.username || "unknown"}): ${text}`);
         const pts = text.split(" ");
         const cmd = pts[0].toLowerCase();
+        const state = userState.get(cid);
 
+        // Redact private keys from printed logs
+        let logText = text;
+        if (cmd === "/wallet" || cmd === "/setwallet" || (state && state.action === "editing_wallet")) {
+            logText = (cmd === "/wallet" || cmd === "/setwallet") ? `${pts[0]} [REDACTED_PRIVATE_KEY]` : "[REDACTED_PRIVATE_KEY]";
+        }
+        log("info", `Telegram Message from ${cid} (@${msg.from.username || "unknown"}): ${logText}`);
+
+        // Handle active state editing
+        if (state) {
+            userState.delete(cid); // Clear state
+            
+            if (state.action === "editing_wallet") {
+                // Delete message containing private key immediately
+                await deleteTelegramMessage(cid, msg.message_id);
+                
+                let resMsg = "❌ Wallet update failed.";
+                if (handlers.setwallet) {
+                    const res = await handlers.setwallet(text);
+                    if (res.success) {
+                        resMsg = `✅ *Wallet Updated Successfully!*\nNew Public Key: \`${res.publicKey}\``;
+                    } else {
+                        resMsg = `❌ *Wallet Update Failed:*\n${res.error || "Unknown error"}`;
+                    }
+                }
+                await sendToChat(cid, resMsg);
+                continue;
+            }
+
+            const val = parseFloat(text.replace(",", "."));
+            if (isNaN(val)) {
+                await sendToChat(cid, "❌ Input tidak valid. Harus berupa angka.");
+            } else {
+                let resMsg = "";
+                if (state.action === "editing_tp") {
+                    if (handlers.set) resMsg = await handlers.set("tp", text);
+                } else if (state.action === "editing_sl") {
+                    if (handlers.set) resMsg = await handlers.set("sl", text);
+                } else if (state.action === "editing_cap") {
+                    config.management.globalMaxCapSol = val;
+                    resMsg = `✅ Max SOL Cap diatur ke: ${val} SOL`;
+                }
+                
+                await sendToChat(cid, resMsg);
+                if (handlers.config) {
+                    const cfg = await handlers.config();
+                    await sendToChat(cid, cfg.text, cfg.buttons);
+                }
+            }
+            continue;
+        }
+        
         if (cmd === "/menu" || cmd === "/start") {
           const mm = { inline_keyboard: [[{ text: "🎯 Open Position", callback_data: "m_o" }, { text: "📊 Status", callback_data: "m_s" }], [{ text: "🔥 Top Pools", callback_data: "m_t" }, { text: "⚙️ Config", callback_data: "m_c" }]] };
           await sendToChat(cid, "🤖 *DeltLP Interactive Menu*", mm);
@@ -333,8 +432,31 @@ export async function initTelegramBot(handlers = {}) {
             if (handlers.lo) await handlers.lo(pts[1], tamt);
         } else if (cmd === "/set") {
             if (handlers.set) await sendToChat(cid, await handlers.set(pts[1], pts[2]));
+        } else if (cmd === "/wallet" || cmd === "/setwallet") {
+            // Delete message containing private key immediately
+            await deleteTelegramMessage(cid, msg.message_id);
+            
+            const pKey = pts[1];
+            if (!pKey) {
+                await sendToChat(cid, "Usage: `/wallet <private_key>` or `/setwallet <private_key>`");
+            } else {
+                let resMsg = "❌ Wallet update failed.";
+                if (handlers.setwallet) {
+                    const res = await handlers.setwallet(pKey);
+                    if (res.success) {
+                        resMsg = `✅ *Wallet Updated Successfully!*\nNew Public Key: \`${res.publicKey}\``;
+                    } else {
+                        resMsg = `❌ *Wallet Update Failed:*\n${res.error || "Unknown error"}`;
+                    }
+                }
+                await sendToChat(cid, resMsg);
+            }
         } else if (cmd === "/config") {
-            if (handlers.config) await sendToChat(cid, await handlers.config());
+            if (handlers.config) {
+                const res = await handlers.config();
+                if (typeof res === "object") await sendToChat(cid, res.text, res.buttons);
+                else await sendToChat(cid, res);
+            }
         }
       }
     } catch (e) {

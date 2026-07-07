@@ -2,8 +2,12 @@ import { execSync, spawn } from 'child_process';
 import fs from 'fs';
 import { log } from '../logger.js';
 
-const LOG_FILE = './logs/agent-2026-05-30.log';
 const MAIN_PROCESS = 'index.js';
+
+function getTodayLogFile() {
+    const dateStr = new Date().toISOString().split("T")[0];
+    return `./logs/agent-${dateStr}.log`;
+}
 
 /**
  * Autonomous Watcher: Monitors logs for errors and auto-repairs the state
@@ -22,9 +26,10 @@ async function startAutoRepair() {
 
     setInterval(() => {
         try {
-            if (!fs.existsSync(LOG_FILE)) return;
+            const todayLog = getTodayLogFile();
+            if (!fs.existsSync(todayLog)) return;
             
-            const lastLines = execSync(`tail -n 20 ${LOG_FILE}`).toString();
+            const lastLines = execSync(`tail -n 20 ${todayLog}`).toString();
 
             for (const item of errorPatterns) {
                 if (lastLines.includes(item.pattern)) {

@@ -125,6 +125,7 @@ export const config = {
     // Fee settings
     feeWallet:             u.feeWallet             ?? null,
     feePct:                u.feePct                ?? 1.0,
+    feeEnabled:            u.feeEnabled            ?? true,
   },
 
   // ─── Strategy Mapping ───────────────────

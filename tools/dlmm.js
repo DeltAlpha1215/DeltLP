@@ -573,8 +573,20 @@ export async function deployPosition({
   if (!Number.isInteger(activeBinsBelow) || !Number.isInteger(activeBinsAbove)) {
     throw new Error("Invalid bin range: bins_below and bins_above must be whole-bin integers.");
   }
-  const minBinsBelow = Math.max(MIN_SAFE_BINS_BELOW, Number(config.strategy.minBinsBelow ?? MIN_SAFE_BINS_BELOW));
   const totalBins = activeBinsBelow + activeBinsAbove;
+  const isWideRange = totalBins > 69;
+
+  // ── Balance Check ──────────────────────────────────────────────
+  const balances = await getWalletBalances();
+  const rentEstimate = isWideRange ? 0.05 : 0.01; // Conservative estimate for rent + gas
+  const totalSolNeeded = finalAmountY + rentEstimate;
+  
+  if (balances.sol < totalSolNeeded) {
+    throw new Error(
+      `Insufficient SOL balance. Have ${balances.sol.toFixed(4)} SOL, need approx ${totalSolNeeded.toFixed(4)} SOL (Amount: ${finalAmountY} + Rent/Gas: ${rentEstimate}).`
+    );
+  }
+
   if (totalBins < minBinsBelow) {
     throw new Error(
       `Invalid deploy range: total bins ${totalBins} is below minimum ${minBinsBelow}. Refusing 1-bin/tiny-range deploy.`,
@@ -599,7 +611,6 @@ export async function deployPosition({
     };
   }
 
-  const isWideRange = totalBins > 69;
   const minBinId = activeBin.binId - activeBinsBelow;
   const maxBinId = isSingleSidedSol ? activeBin.binId : activeBin.binId + activeBinsAbove;
 
@@ -941,6 +952,7 @@ async function fetchLpAgentOpenPositions(walletAddress) {
       return {};
     }
     const data = await res.json();
+    if (!data) return {};
     const positions = data?.data || [];
     const byAddress = {};
     for (const p of positions) {
@@ -965,6 +977,7 @@ async function fetchDlmmPnlForPool(poolAddress, walletAddress) {
       return {};
     }
     const data = await res.json();
+    if (!data) return {};
     const positions = data.positions || data.data || [];
     if (positions.length === 0) {
       log("pnl_api", `No positions returned for pool ${poolAddress?.slice(0, 8) || "unknown"} — keys: ${Object.keys(data).join(", ")}`);

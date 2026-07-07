@@ -17,8 +17,6 @@
     "dev": "DRY_RUN=true node index.js",
     "test": "npm run test:syntax",
     "test:syntax": "find . -path ./node_modules -prune -o -name '*.js' -exec node --check {} \\;",
-    "test:screen": "node test/test-screening.js",
-    "test:agent": "DRY_RUN=true node test/test-agent.js",
     "postinstall": "node scripts/patch-anchor.js"
   },
   "knip": {
@@ -27,6 +25,8 @@
   "dependencies": {
     "@meteora-ag/dlmm": "1.9.4",
     "@solana/web3.js": "^1.95.0",
+    "blessed": "^0.1.81",
+    "blessed-contrib": "^4.11.0",
     "bn.js": "^5.2.1",
     "bs58": "^5.0.0",
     "dotenv": "^17.3.1"
