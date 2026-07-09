@@ -5,6 +5,8 @@ import { log } from "./logger.js";
 import { config } from "./config.js";
 import { getPoolVolatility } from "./tools/meteora-top.js";
 import { searchPools } from "./tools/dlmm.js";
+import * as stateHelper from "./state.js";
+import * as dlmm from "./tools/dlmm.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const USER_CONFIG_PATH = path.join(__dirname, "user-config.json");
@@ -166,6 +168,149 @@ export async function notifyOutOfRange({ pair, minutesOOR }) {
     await broadcast(`⚠️ *OUT OF RANGE*\n${pair}\nOOR for ${minutesOOR} minutes`);
 }
 
+async function editTelegramMessageMarkup(chatId, messageId, replyMarkup) {
+    if (!BASE || !chatId || !messageId) return;
+    try {
+        await fetch(`${BASE}/editMessageReplyMarkup`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                chat_id: chatId,
+                message_id: messageId,
+                reply_markup: replyMarkup
+            })
+        });
+    } catch (e) {
+        log("telegram_error", `Edit reply markup failed: ${e.message}`);
+    }
+}
+
+async function setupAndSendLpMenu(cid, tca, tamt) {
+    await sendToChat(cid, `🔍 Identifying pool for \`${tca.slice(0,12)}...\``);
+    
+    let v = 0, pName = "Unknown", pAddr = null;
+    try { 
+        // Find pool using searchPools
+        const searchRes = await searchPools({ query: tca, limit: 10 });
+        const solPools = (searchRes.pools || []).filter(p => p.name.includes("-SOL") || p.name.includes("SOL-"));
+        
+        if (solPools.length > 0) {
+            const bestPool = solPools[0];
+            pName = bestPool.name;
+            pAddr = bestPool.pool;
+            
+            const pInf = await getPoolVolatility(pAddr); 
+            v = pInf ? pInf.volatility : 0;
+        }
+    } catch (err) { 
+        log("telegram_error", `Pool identification failed: ${err.message}`);
+    }
+
+    if (pName === "Unknown") {
+        await sendToChat(cid, "❌ Pool SOL tidak ditemukan untuk CA tersebut. Pastikan CA benar.");
+        return;
+    }
+
+    // Save configuration in state
+    userState.set(cid, {
+        action: "configuring_lp",
+        ca: tca,
+        amount: tamt,
+        as: false,
+        ar: false,
+        poolName: pName,
+        volatility: v
+    });
+
+    await sendLpMenuMessage(cid, pName, v, tamt, false, false);
+}
+
+async function sendLpMenuMessage(cid, poolName, volatility, amount, asState, arState) {
+    const text = `✅ *Pool:* ${poolName}\n📈 *Vol:* ${volatility.toFixed(2)}\n💰 *Amount:* ${amount} SOL\n\n🎯 *Atur Opsi & Pilih Strategi:*`;
+    
+    const markup = { 
+        inline_keyboard: [
+            [
+                { text: `🔄 Auto-Swap: ${asState ? '✅' : '❌'}`, callback_data: "c_as" },
+                { text: `🔁 Auto-Reentry: ${arState ? '✅' : '❌'}`, callback_data: "c_ar" }
+            ],
+            [{ text: "📉 Deploy Fibonacci", callback_data: "c_fib" }], 
+            [
+                { text: "🎯 Limit Order (Bid-Ask)", callback_data: "c_lo_ba" },
+                { text: "🎯 Limit Order (Spot)", callback_data: "c_lo_spot" }
+            ],
+            [
+                { text: "📊 Tight Vol (x5)", callback_data: "c_vol5" },
+                { text: "📊 Wide Vol (x10)", callback_data: "c_vol10" }
+            ],
+            [{ text: "⬅️ Cancel", callback_data: "m_m" }]
+        ] 
+    };
+    
+    await sendToChat(cid, text, markup);
+}
+
+async function updateLpMenuReplyMarkup(cid, messageId, asState, arState) {
+    const markup = { 
+        inline_keyboard: [
+            [
+                { text: `🔄 Auto-Swap: ${asState ? '✅' : '❌'}`, callback_data: "c_as" },
+                { text: `🔁 Auto-Reentry: ${arState ? '✅' : '❌'}`, callback_data: "c_ar" }
+            ],
+            [{ text: "📉 Deploy Fibonacci", callback_data: "c_fib" }], 
+            [
+                { text: "🎯 Limit Order (Bid-Ask)", callback_data: "c_lo_ba" },
+                { text: "🎯 Limit Order (Spot)", callback_data: "c_lo_spot" }
+            ],
+            [
+                { text: "📊 Tight Vol (x5)", callback_data: "c_vol5" },
+                { text: "📊 Wide Vol (x10)", callback_data: "c_vol10" }
+            ],
+            [{ text: "⬅️ Cancel", callback_data: "m_m" }]
+        ] 
+    };
+    await editTelegramMessageMarkup(cid, messageId, markup);
+}
+
+async function sendAutomationDashboard(cid, isAuto) {
+    const autoStatus = isAuto ? "✅ ON" : "❌ OFF";
+    const solAmt = config.management.deployAmountSol || 0.05;
+    let text = `🤖 *Automation Dashboard*\nStatus: *${autoStatus}*\n💰 *SOL Amount:* ${solAmt} SOL\n\n`;
+    
+    try {
+        const posData = await dlmm.getMyPositions({ force: true, silent: true });
+        const activePositions = posData.positions || [];
+        
+        text += `📊 *Active Positions (${activePositions.length}/3):*\n`;
+        const keyboard = [];
+        
+        activePositions.forEach((p, index) => {
+            text += `${index + 1}. *${p.pair}* | PnL: \`${(p.pnl_pct || 0).toFixed(2)}%\`\n`;
+            keyboard.push([{ text: `❌ Close Pos #${index + 1} (${p.pair})`, callback_data: `c_close_pos:${p.position}` }]);
+        });
+        
+        if (activePositions.length === 0) {
+            text += "_Tidak ada posisi aktif._\n";
+        }
+        
+        keyboard.push([
+            { text: `💰 Set Auto SOL (${solAmt} SOL)`, callback_data: "c_set_auto_sol" }
+        ]);
+        keyboard.push([
+            { text: isAuto ? "🔴 Turn OFF Automation" : "🟢 Turn ON Automation", callback_data: "c_toggle_auto" }
+        ]);
+        keyboard.push([
+            { text: "🚨 EMERGENCY CLOSE ALL", callback_data: "c_panic_confirm" }
+        ]);
+        keyboard.push([{ text: "⬅️ Back to Menu", callback_data: "m_m" }]);
+        
+        await sendToChat(cid, text, { inline_keyboard: keyboard });
+    } catch (e) {
+        log("telegram_error", `Dashboard load failed: ${e.message}`);
+        await sendToChat(cid, "❌ Gagal memuat dashboard automasi.");
+    }
+}
+
 // ─── Command Listener ──────────────────────────────────────────
 const processedUpdates = new Set();
 
@@ -238,11 +383,14 @@ export async function initTelegramBot(handlers = {}) {
             } catch (e) {}
 
             if (data === "m_o") {
-                await sendToChat(cid, "🎯 *Pilih Strategi LP:*\n\n1. *Fibonacci*: Entry 0.236.\n2. *Volatility*: Dinamis (Vol x5/x10).", {
-                    inline_keyboard: [[{ text: "📉 Fibonacci", callback_data: "a_f" }, { text: "📊 Volatility", callback_data: "a_v" }], [{ text: "⬅️ Back", callback_data: "m_m" }]]
-                });
+                userState.set(cid, { action: "waiting_for_ca" });
+                await sendToChat(cid, "📝 *Masukkan Contract Address (CA) token Solana*:\n(Bisa menyertakan jumlah SOL juga, contoh: `CA_TOKEN` atau `CA_TOKEN 0.05` atau ketik `/cancel` untuk membatalkan)");
             } else if (data === "m_s") {
-                if (handlers.status) await sendToChat(cid, await handlers.status());
+                if (handlers.status) {
+                    const res = await handlers.status();
+                    if (typeof res === "object") await sendToChat(cid, res.text, res.buttons);
+                    else await sendToChat(cid, res);
+                }
             } else if (data === "m_t") {
                 if (handlers.top) {
                     await sendToChat(cid, "🔍 Scanning elite pools...");
@@ -266,6 +414,14 @@ export async function initTelegramBot(handlers = {}) {
                     const res = await handlers.config();
                     await sendToChat(cid, res.text, res.buttons);
                 }
+            } else if (data === "c_dry_on" || data === "c_dry_off") {
+                if (handlers.set_dryrun) {
+                    await handlers.set_dryrun(data === "c_dry_on" ? "true" : "false");
+                }
+                if (handlers.config) {
+                    const res = await handlers.config();
+                    await sendToChat(cid, res.text, res.buttons);
+                }
             } else if (data === "c_set_tp") {
                 userState.set(cid, { action: "editing_tp" });
                 await sendToChat(cid, "📝 Masukkan nilai *Global Take Profit* baru (%):\n(Contoh: `10` untuk 10%)");
@@ -279,28 +435,157 @@ export async function initTelegramBot(handlers = {}) {
                 userState.set(cid, { action: "editing_wallet" });
                 await sendToChat(cid, "🔑 *Masukkan Private Key Solana (Base58)* baru:\n\n⚠️ _Security note: Pesan Anda akan langsung dihapus otomatis oleh bot setelah dibaca demi keamanan._");
             } else if (data === "m_m") {
-                const mm = { inline_keyboard: [[{ text: "🎯 Open Position", callback_data: "m_o" }, { text: "📊 Status", callback_data: "m_s" }], [{ text: "🔥 Top Pools", callback_data: "m_t" }, { text: "⚙️ Config", callback_data: "m_c" }]] };
+                const autoStatus = stateHelper.isAutomationEnabled() ? "✅ ON" : "❌ OFF";
+                const mm = { 
+                    inline_keyboard: [
+                        [{ text: "🎯 Open Position", callback_data: "m_o" }, { text: "📊 Status", callback_data: "m_s" }],
+                        [{ text: "🔥 Top Pools", callback_data: "m_t" }, { text: "⚙️ Config", callback_data: "m_c" }],
+                        [{ text: `🤖 Automation: ${autoStatus}`, callback_data: "c_auto_dash" }]
+                    ] 
+                };
                 await sendToChat(cid, "🤖 *DeltLP Interactive Menu*", mm);
-            } else if (data === "a_f") {
-                await sendToChat(cid, "📝 Ketik CA koin untuk strategi *Fibonacci*.\nFormat: `/lp <CA> [amount]`");
-            } else if (data === "a_v") {
-                await sendToChat(cid, "📝 Ketik CA koin untuk strategi *Volatility*.\nFormat: `/lp <CA> [amount]`");
-            } 
-            // Handle execution commands (colon separated)
-            else if (data.includes(":")) {
-                const [type, tca, amt, fl, vv] = data.split(":");
-                let arg = (fl === "1") ? "AS" : (fl === "2") ? "AR" : (fl === "3") ? "AS AR" : "";
-                
-                if (type === "f") {
-                    await sendToChat(cid, `📉 Memulai LP Fibonacci untuk ${tca.slice(0,8)}...`);
-                    if (handlers.lp) await handlers.lp(tca, `${amt} ${arg}`);
-                } else if (type === "vt") {
-                    await sendToChat(cid, `📊 Memulai LP Tight Vol (x5) untuk ${tca.slice(0,8)}...`);
-                    if (handlers.lp_vol) await handlers.lp_vol(tca, `${amt} ${arg} M5 V${vv}`);
-                } else if (type === "vw") {
-                    await sendToChat(cid, `📊 Memulai LP Wide Vol (x10) untuk ${tca.slice(0,8)}...`);
-                    if (handlers.lp_vol) await handlers.lp_vol(tca, `${amt} ${arg} M10 V${vv}`);
+            } else if (data === "c_as" || data === "c_ar") {
+                const st = userState.get(cid);
+                if (st && st.action === "configuring_lp") {
+                    if (data === "c_as") st.as = !st.as;
+                    if (data === "c_ar") st.ar = !st.ar;
+                    await updateLpMenuReplyMarkup(cid, cb.message.message_id, st.as, st.ar);
                 }
+                continue;
+            } else if (data === "c_fib" || data === "c_vol5" || data === "c_vol10" || data === "c_lo_ba" || data === "c_lo_spot") {
+                const st = userState.get(cid);
+                if (st && st.action === "configuring_lp") {
+                    userState.delete(cid); // Clear state
+                    
+                    let arg = "";
+                    if (st.as) arg += "AS ";
+                    if (st.ar) arg += "AR";
+                    arg = arg.trim();
+
+                    let strategyText = "";
+                    if (data === "c_fib") {
+                        strategyText = "Fibonacci";
+                        await sendToChat(cid, `📉 Memulai LP Fibonacci untuk ${st.ca.slice(0,8)}...`);
+                        if (handlers.lp) await handlers.lp(st.ca, `${st.amount} ${arg}`);
+                    } else if (data === "c_vol5") {
+                        strategyText = "Tight Vol (x5)";
+                        await sendToChat(cid, `📊 Memulai LP Tight Vol (x5) untuk ${st.ca.slice(0,8)}...`);
+                        if (handlers.lp_vol) await handlers.lp_vol(st.ca, `${st.amount} ${arg} M5 V${(st.volatility || 2.0).toFixed(1)}`);
+                    } else if (data === "c_vol10") {
+                        strategyText = "Wide Vol (x10)";
+                        await sendToChat(cid, `📊 Memulai LP Wide Vol (x10) untuk ${st.ca.slice(0,8)}...`);
+                        if (handlers.lp_vol) await handlers.lp_vol(st.ca, `${st.amount} ${arg} M10 V${(st.volatility || 2.0).toFixed(1)}`);
+                    } else if (data === "c_lo_ba") {
+                        strategyText = "Limit Order (Bid-Ask)";
+                        await sendToChat(cid, `🎯 Memulai Limit Order (Bid-Ask) untuk ${st.ca.slice(0,8)}...`);
+                        if (handlers.set_lo) await handlers.set_lo(st.ca, st.amount, "BA", st.as, st.ar);
+                    } else if (data === "c_lo_spot") {
+                        strategyText = "Limit Order (Spot)";
+                        await sendToChat(cid, `🎯 Memulai Limit Order (Spot) untuk ${st.ca.slice(0,8)}...`);
+                        if (handlers.set_lo) await handlers.set_lo(st.ca, st.amount, "SPOT", st.as, st.ar);
+                    }
+                    
+                    // Replace/delete options menu so it cannot be double-clicked
+                    try {
+                        await fetch(`${BASE}/editMessageText`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                chat_id: cid,
+                                message_id: cb.message.message_id,
+                                text: `✅ *Deployment Sent:* ${st.poolName}\n🎯 *Strategy:* ${strategyText}\n💰 *Amount:* ${st.amount} SOL\n🔧 *Options:* ${arg || "None"}`
+                            })
+                        });
+                    } catch (e) {}
+                }
+                continue;
+            } else if (data === "c_auto_dash") {
+                const isAuto = stateHelper.isAutomationEnabled();
+                await sendAutomationDashboard(cid, isAuto);
+                continue;
+            } else if (data === "c_set_auto_sol") {
+                userState.set(cid, { action: "editing_auto_sol" });
+                await sendToChat(cid, "📝 Masukkan jumlah SOL baru untuk Auto-Deploy:\n(Contoh: `0.1` untuk 0.1 SOL)");
+                continue;
+            } else if (data === "c_toggle_auto") {
+                if (handlers.toggle_automation) {
+                    const nextState = await handlers.toggle_automation();
+                    await sendAutomationDashboard(cid, nextState);
+                }
+                continue;
+            } else if (data.startsWith("c_close_pos:")) {
+                const posAddr = data.split(":")[1];
+                await sendToChat(cid, `⏳ Menutup posisi \`${posAddr.slice(0,8)}...\`...`);
+                if (handlers.close_position) {
+                    const resMsg = await handlers.close_position(posAddr);
+                    await sendToChat(cid, resMsg);
+                }
+                setTimeout(async () => {
+                    const isAuto = stateHelper.isAutomationEnabled();
+                    await sendAutomationDashboard(cid, isAuto);
+                }, 4000);
+            } else if (data.startsWith("c_edit_tp:") || data.startsWith("c_edit_sl:")) {
+                const parts = data.split(":");
+                const type = parts[0] === "c_edit_tp" ? "tp" : "sl";
+                const posAddr = parts[1];
+                
+                userState.set(cid, { action: `editing_pos_${type}`, pos: posAddr });
+                await sendToChat(cid, `📝 Masukkan nilai *${type.toUpperCase()}* baru (%) untuk posisi \`${posAddr.slice(0,8)}...\`:\n(Contoh: \`10\` untuk 10%, atau \`-15\` untuk -15%)`);
+                continue;
+            } else if (data.startsWith("c_toggle_tpmode:")) {
+                const posAddr = data.split(":")[1];
+                const tracked = stateHelper.getTrackedPosition(posAddr) || {};
+                const current = tracked.tpMode || "bb_rsi";
+                
+                let curLabel = "BB+RSI";
+                if (current === "static") curLabel = "Static %";
+                if (current === "trailing") curLabel = "Trailing";
+                
+                const mm = { 
+                    inline_keyboard: [
+                        [{ text: "📊 Static %", callback_data: `c_set_tpmode:${posAddr}:static` }],
+                        [{ text: "📈 Trailing", callback_data: `c_set_tpmode:${posAddr}:trailing` }],
+                        [{ text: "📉 BB + RSI", callback_data: `c_set_tpmode:${posAddr}:bb_rsi` }],
+                        [{ text: "⬅️ Batal", callback_data: "m_s" }]
+                    ] 
+                };
+                await sendToChat(cid, `🔄 *Pilih Mode Take Profit untuk Posisi \`${posAddr.slice(0,8)}...\`*\n\nMode saat ini: *${curLabel}*`, mm);
+                continue;
+            } else if (data.startsWith("c_set_tpmode:")) {
+                const parts = data.split(":");
+                const posAddr = parts[1];
+                const selectedMode = parts[2];
+                
+                stateHelper.updateTrackedPosition(posAddr, { tpMode: selectedMode });
+                
+                let modeLabel = "BB+RSI";
+                if (selectedMode === "static") modeLabel = "Static %";
+                if (selectedMode === "trailing") modeLabel = "Trailing";
+                
+                await sendToChat(cid, `✅ Mode TP posisi \`${posAddr.slice(0,8)}...\` diubah ke: *${modeLabel}*`);
+                
+                if (handlers.status) {
+                    const res = await handlers.status();
+                    if (typeof res === "object") await sendToChat(cid, res.text, res.buttons);
+                    else await sendToChat(cid, res);
+                }
+                continue;
+            } else if (data === "c_panic_confirm") {
+                const mm = { 
+                    inline_keyboard: [
+                        [{ text: "⚠️ YA, TUTUP SEMUA POSISI!", callback_data: "c_panic_execute" }],
+                        [{ text: "❌ BATAL", callback_data: "m_m" }]
+                    ] 
+                };
+                await sendToChat(cid, "🚨 *KONFIRMASI DARURAT*\n\nApakah Anda yakin ingin melikuidasi seluruh posisi aktif di Meteora dan menukar semua koin kembali ke SOL secara instan?", mm);
+                continue;
+            } else if (data === "c_panic_execute") {
+                await sendToChat(cid, "🚨 *Memulai Likuidasi Darurat Seluruh Posisi...*");
+                if (handlers.emergency_close) {
+                    const resultMsg = await handlers.emergency_close();
+                    await sendToChat(cid, resultMsg);
+                }
+                continue;
             }
 
             continue;
@@ -324,9 +609,54 @@ export async function initTelegramBot(handlers = {}) {
 
         // Handle active state editing
         if (state) {
-            userState.delete(cid); // Clear state
-            
+            if (state.action === "editing_pos_tp" || state.action === "editing_pos_sl") {
+                const posAddr = state.pos;
+                userState.delete(cid); // Clear state
+                const val = parseFloat(text.replace(",", "."));
+                
+                if (isNaN(val)) {
+                    await sendToChat(cid, "❌ Input tidak valid. Harus berupa angka.");
+                } else {
+                    const updateObj = {};
+                    if (state.action === "editing_pos_tp") {
+                        updateObj.takeProfitPct = val;
+                        await sendToChat(cid, `✅ TP posisi \`${posAddr.slice(0,8)}...\` diatur ke: ${val}%`);
+                    } else {
+                        updateObj.stopLossPct = val;
+                        await sendToChat(cid, `✅ SL posisi \`${posAddr.slice(0,8)}...\` diatur ke: ${val}%`);
+                    }
+                    stateHelper.updateTrackedPosition(posAddr, updateObj);
+                }
+                continue;
+            }
+
+            if (state.action === "editing_auto_sol") {
+                userState.delete(cid); // Clear state
+                const val = parseFloat(text.replace(",", "."));
+                if (isNaN(val) || val <= 0) {
+                    await sendToChat(cid, "❌ Input tidak valid. Harus berupa angka positif.");
+                } else {
+                    config.management.deployAmountSol = val;
+                    try {
+                        const filePath = path.join(__dirname, "user-config.json");
+                        let current = {};
+                        if (fs.existsSync(filePath)) {
+                            current = JSON.parse(fs.readFileSync(filePath, "utf8"));
+                        }
+                        current.deployAmountSol = val;
+                        fs.writeFileSync(filePath, JSON.stringify(current, null, 2));
+                    } catch (e) {
+                        log("error", `Failed to save deployAmountSol to user-config.json: ${e.message}`);
+                    }
+                    
+                    await sendToChat(cid, `✅ Jumlah Auto SOL diatur ke: ${val} SOL`);
+                    await sendAutomationDashboard(cid, stateHelper.isAutomationEnabled());
+                }
+                continue;
+            }
+
             if (state.action === "editing_wallet") {
+                userState.delete(cid); // Clear state
                 // Delete message containing private key immediately
                 await deleteTelegramMessage(cid, msg.message_id);
                 
@@ -343,6 +673,20 @@ export async function initTelegramBot(handlers = {}) {
                 continue;
             }
 
+            if (state.action === "waiting_for_ca") {
+                userState.delete(cid); // Clear state
+                if (text.toLowerCase() === "/cancel") {
+                    await sendToChat(cid, "❌ Deployment dibatalkan.");
+                    continue;
+                }
+                const parts = text.split(" ");
+                const tca = parts[0];
+                const tamt = parts[1] || "0.001";
+                await setupAndSendLpMenu(cid, tca, tamt);
+                continue;
+            }
+
+            userState.delete(cid); // Clear state
             const val = parseFloat(text.replace(",", "."));
             if (isNaN(val)) {
                 await sendToChat(cid, "❌ Input tidak valid. Harus berupa angka.");
@@ -367,49 +711,43 @@ export async function initTelegramBot(handlers = {}) {
         }
         
         if (cmd === "/menu" || cmd === "/start") {
-          const mm = { inline_keyboard: [[{ text: "🎯 Open Position", callback_data: "m_o" }, { text: "📊 Status", callback_data: "m_s" }], [{ text: "🔥 Top Pools", callback_data: "m_t" }, { text: "⚙️ Config", callback_data: "m_c" }]] };
+          const autoStatus = stateHelper.isAutomationEnabled() ? "✅ ON" : "❌ OFF";
+          const mm = { 
+              inline_keyboard: [
+                  [{ text: "🎯 Open Position", callback_data: "m_o" }, { text: "📊 Status", callback_data: "m_s" }],
+                  [{ text: "🔥 Top Pools", callback_data: "m_t" }, { text: "⚙️ Config", callback_data: "m_c" }],
+                  [{ text: `🤖 Automation: ${autoStatus}`, callback_data: "c_auto_dash" }]
+              ] 
+          };
           await sendToChat(cid, "🤖 *DeltLP Interactive Menu*", mm);
         } else if (cmd === "/status") {
-          if (handlers.status) await sendToChat(cid, await handlers.status());
+          if (handlers.status) {
+              const res = await handlers.status();
+              if (typeof res === "object") await sendToChat(cid, res.text, res.buttons);
+              else await sendToChat(cid, res);
+          }
         } else if (cmd === "/lp") {
           const tca = pts[1];
           const tamt = pts[2] || "0.001";
-          const rarg = pts.slice(3).join(" ").toUpperCase();
           if (!tca) { 
               await sendToChat(cid, "Usage: /lp <CA> [amount]"); 
           } else {
-              await sendToChat(cid, `🔍 Identifying pool for \`${tca.slice(0,12)}...\``);
-              
-              let v = 0, pName = "Unknown", pAddr = null;
-              try { 
-                  // 1. Find pool using reliable Core API
-                  const searchRes = await searchPools({ query: tca, limit: 10 });
-                  const solPools = (searchRes.pools || []).filter(p => p.name.includes("-SOL") || p.name.includes("SOL-"));
-                  
-                  if (solPools.length > 0) {
-                      const bestPool = solPools[0];
-                      pName = bestPool.name;
-                      pAddr = bestPool.pool;
-                      
-                      // 2. Fetch volatility using the specific pool address
-                      const pInf = await getPoolVolatility(pAddr); 
-                      v = pInf ? pInf.volatility : 0;
-                  }
-              } catch (err) { 
-                  log("telegram_error", `Pool identification failed: ${err.message}`);
-              }
-              
-              const fv = (v > 0 ? v : 2.0).toFixed(1);
-              let fl = rarg.includes("AS") && rarg.includes("AR") ? "3" : rarg.includes("AS") ? "1" : rarg.includes("AR") ? "2" : "0";
-              
-              const markup = { 
-                  inline_keyboard: [
-                      [{ text: "📉 Fibonacci", callback_data: `f:${tca}:${tamt}:${fl}:${fv}` }], 
-                      [{ text: `📊 Tight (x5)`, callback_data: `vt:${tca}:${tamt}:${fl}:${fv}` }, { text: `📊 Wide (x10)`, callback_data: `vw:${tca}:${tamt}:${fl}:${fv}` }]
-                  ] 
-              };
-              await sendToChat(cid, `✅ *Pool:* ${pName}\n📈 *Vol:* ${v.toFixed(2)}\n💰 *Amt:* ${tamt} SOL\n\n🎯 *Pilih Strategi:*`, markup);
+              await setupAndSendLpMenu(cid, tca, tamt);
           }
+        } else if (cmd === "/dryrun") {
+            if (handlers.set_dryrun) {
+                const nextVal = process.env.DRY_RUN === "true" ? "false" : "true";
+                const resMsg = await handlers.set_dryrun(nextVal);
+                await sendToChat(cid, resMsg);
+            }
+        } else if (cmd === "/panic") {
+            const mm = { 
+                inline_keyboard: [
+                    [{ text: "⚠️ YA, TUTUP SEMUA POSISI!", callback_data: "c_panic_execute" }],
+                    [{ text: "❌ BATAL", callback_data: "m_m" }]
+                ] 
+            };
+            await sendToChat(cid, "🚨 *KONFIRMASI DARURAT*\n\nApakah Anda yakin ingin melikuidasi seluruh posisi aktif di Meteora dan menukar semua koin kembali ke SOL secara instan?", mm);
         } else if (cmd === "/top") {
             if (handlers.top) {
                 await sendToChat(cid, "🔍 Searching elite pools...");

@@ -2,7 +2,7 @@ import "dotenv/config";
 import { log } from "../logger.js";
 
 const API_KEY = process.env.SUPERMEMORY_API_KEY;
-const API_BASE = "https://api.supermemory.ai/v1";
+const API_BASE = "https://api.supermemory.ai";
 
 /**
  * Add a new memory/fact to the knowledge graph
@@ -11,7 +11,7 @@ export async function addMemory(content, tags = ["deltlp", "bot-brain"]) {
     if (!API_KEY) return null;
 
     try {
-        const response = await fetch(`${API_BASE}/memories`, {
+        const response = await fetch(`${API_BASE}/v3/documents`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -19,8 +19,7 @@ export async function addMemory(content, tags = ["deltlp", "bot-brain"]) {
             },
             body: JSON.stringify({
                 content,
-                tags,
-                source: "deltlp-agent"
+                containerTags: tags
             })
         });
 
@@ -45,13 +44,16 @@ export async function queryMemory(query) {
     if (!API_KEY) return [];
 
     try {
-        const response = await fetch(`${API_BASE}/query`, {
+        const response = await fetch(`${API_BASE}/v4/search`, {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
                 "Authorization": `Bearer ${API_KEY}`
             },
-            body: JSON.stringify({ query })
+            body: JSON.stringify({ 
+                q: query,
+                containerTag: "deltlp-agent"
+            })
         });
 
         if (!response.ok) return [];

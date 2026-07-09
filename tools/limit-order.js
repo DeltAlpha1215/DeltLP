@@ -3,15 +3,17 @@ import { deployPosition, getActiveBin } from "./dlmm.js";
 import { fetchTokenInfo_GMGN, fetchTokenHistory_GMGN } from "./gmgn.js";
 import { getWalletBalances } from "./wallet.js";
 import { trackPosition } from "../state.js";
-import { notifyDeploy } from "../telegram.js";
+import { notifyDeploy, notifyError, sendMessage } from "../telegram.js";
 
 /**
  * Eksekusi Limit Order berbasis Fibonacci
  * @param {string} ca - Contract Address
  * @param {number} amountSol - Jumlah SOL yang digunakan
  * @param {string} mode - 'BA' (Bid-Ask) atau 'SPOT'
+ * @param {boolean} autoSwap - Auto-Swap flag
+ * @param {boolean} autoReentry - Auto-Reentry flag
  */
-export async function executeLimitOrder(ca, amountSol, mode = "BA") {
+export async function executeLimitOrder(ca, amountSol, mode = "BA", autoSwap = false, autoReentry = false) {
     try {
         console.log(`\n🎯 MEMULAI LIMIT ORDER FIBONACCI (Mode: ${mode.toUpperCase()})`);
         console.log(`🔎 CA: ${ca}`);
@@ -88,15 +90,19 @@ export async function executeLimitOrder(ca, amountSol, mode = "BA") {
                 trailingActivationPct: 30,
                 amountSol: amountSol,
                 isLimitOrder: true,
-                loRange: { start: effectiveStart, bottom: effectiveBottom }
+                loRange: { start: effectiveStart, bottom: effectiveBottom },
+                autoSwap,
+                autoReentry
             });
             notifyDeploy({ pair: `${bestPool.name} (LO ${mode})`, amountSol, position: res.position });
         } else {
             console.log(`❌ LO GAGAL: ${res.error}`);
+            await notifyError(`LO DEPLOYMENT FAILED\nPair: ${bestPool?.name || "Unknown"} (LO ${mode})\nAmount: ${amountSol} SOL\nError: ${res.error}`);
         }
 
     } catch (err) {
         log("error", `Limit Order Error: ${err.message}`);
         console.log(`❌ ERROR: ${err.message}`);
+        await notifyError(`System error during LO Deploy for CA: ${ca}\nError: ${err.message}`);
     }
 }

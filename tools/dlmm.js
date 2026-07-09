@@ -13,7 +13,7 @@ import BN from "bn.js";
 import bs58 from "bs58";
 import { config, computeDeployAmount, MIN_SAFE_BINS_BELOW } from "../config.js";
 import { log } from "../logger.js";
-import { normalizeMint } from "./wallet.js";
+import { normalizeMint, getWalletBalances } from "./wallet.js";
 import { agentDeltLPJson, getAgentIdForRequests, getAgentDeltLPHeaders } from "./agent-deltlp.js";
 
 import { 
@@ -581,21 +581,23 @@ export async function deployPosition({
   const rentEstimate = isWideRange ? 0.05 : 0.01; // Conservative estimate for rent + gas
   const totalSolNeeded = finalAmountY + rentEstimate;
   
-  if (balances.sol < totalSolNeeded) {
+  if (balances.sol < totalSolNeeded && process.env.DRY_RUN !== "true") {
     throw new Error(
       `Insufficient SOL balance. Have ${balances.sol.toFixed(4)} SOL, need approx ${totalSolNeeded.toFixed(4)} SOL (Amount: ${finalAmountY} + Rent/Gas: ${rentEstimate}).`
     );
   }
 
-  if (totalBins < minBinsBelow) {
+  if (totalBins < MIN_SAFE_BINS_BELOW) {
     throw new Error(
-      `Invalid deploy range: total bins ${totalBins} is below minimum ${minBinsBelow}. Refusing 1-bin/tiny-range deploy.`,
+      `Invalid deploy range: total bins ${totalBins} is below minimum ${MIN_SAFE_BINS_BELOW}. Refusing 1-bin/tiny-range deploy.`,
     );
   }
 
   if (process.env.DRY_RUN === "true") {
     return {
+      success: true,
       dry_run: true,
+      position: `dry_run_pos_${Date.now()}`,
       would_deploy: {
         pool_address,
         strategy: activeStrategy,
@@ -1295,6 +1297,7 @@ export async function getMyPositions({ force = false, silent = false, wallet_add
           pool:               pool.poolAddress,
           pair:               tracked?.pool_name || `${pool.tokenX}/${pool.tokenY}`,
           base_mint:          pool.tokenXMint,
+          bin_step:           pool.binStep ?? pool.bin_step ?? tracked?.bin_step ?? null,
           lower_bin:          lowerBin,
           upper_bin:          upperBin,
           active_bin:         activeBin,
@@ -1483,7 +1486,7 @@ export async function searchPools({ query, limit = 10 }) {
 export async function claimFees({ position_address }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
-    return { dry_run: true, would_claim: position_address, message: "DRY RUN — no transaction sent" };
+    return { success: true, dry_run: true, would_claim: position_address, message: "DRY RUN — no transaction sent" };
   }
 
   const tracked = getTrackedPosition(position_address);
@@ -1529,7 +1532,7 @@ export async function claimFees({ position_address }) {
 export async function closePosition({ position_address, reason }) {
   position_address = normalizeMint(position_address);
   if (process.env.DRY_RUN === "true") {
-    return { dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
+    return { success: true, dry_run: true, would_close: position_address, message: "DRY RUN — no transaction sent" };
   }
 
   const tracked = getTrackedPosition(position_address);

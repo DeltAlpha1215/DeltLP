@@ -115,3 +115,52 @@ export function minutesOutOfRange(address) {
   const oorAt = new Date(pos.oorSince).getTime();
   return Math.floor((Date.now() - oorAt) / 60000);
 }
+
+/**
+ * Cek status automasi global.
+ */
+export function isAutomationEnabled() {
+  const state = getTrackedPositions();
+  return state._automationEnabled === true;
+}
+
+/**
+ * Set status automasi global.
+ */
+export function setAutomationEnabled(enabled) {
+  const state = getTrackedPositions();
+  state._automationEnabled = enabled;
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+/**
+ * Record a closed position's base mint to track its cooldown.
+ */
+export function recordClosedPosition(mint) {
+  if (!mint) return;
+  const state = getTrackedPositions();
+  if (!state._closedPositions) state._closedPositions = {};
+  state._closedPositions[mint] = new Date().toISOString();
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+/**
+ * Check if a base mint is currently in a 15-minute cooldown.
+ */
+export function isPositionInCooldown(mint) {
+  if (!mint) return false;
+  const state = getTrackedPositions();
+  if (!state._closedPositions || !state._closedPositions[mint]) return false;
+  
+  const closedTime = new Date(state._closedPositions[mint]).getTime();
+  const cooldownMs = 15 * 60 * 1000; // 15 minutes
+  
+  if (Date.now() - closedTime < cooldownMs) {
+    return true;
+  }
+  
+  // Clean up expired cooldown from state
+  delete state._closedPositions[mint];
+  fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+  return false;
+}
