@@ -431,6 +431,9 @@ export async function initTelegramBot(handlers = {}) {
             } else if (data === "c_set_cap") {
                 userState.set(cid, { action: "editing_cap" });
                 await sendToChat(cid, "📝 Masukkan nilai *Max SOL Cap* baru (SOL):\n(Contoh: `1.5`) \n\n_Batas total modal yang boleh digunakan bot._");
+            } else if (data === "c_set_tx_cap") {
+                userState.set(cid, { action: "editing_tx_cap" });
+                await sendToChat(cid, "📝 Masukkan nilai *Tx Max Cap* baru (SOL per transaksi):\n(Contoh: `0.5`) \n\n_Batas modal maksimum untuk satu transaksi/posisi._");
             } else if (data === "c_set_wallet") {
                 userState.set(cid, { action: "editing_wallet" });
                 await sendToChat(cid, "🔑 *Masukkan Private Key Solana (Base58)* baru:\n\n⚠️ _Security note: Pesan Anda akan langsung dihapus otomatis oleh bot setelah dibaca demi keamanan._");
@@ -699,6 +702,29 @@ export async function initTelegramBot(handlers = {}) {
                 } else if (state.action === "editing_cap") {
                     config.management.globalMaxCapSol = val;
                     resMsg = `✅ Max SOL Cap diatur ke: ${val} SOL`;
+                    try {
+                        let current = {};
+                        if (fs.existsSync(USER_CONFIG_PATH)) {
+                            current = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+                        }
+                        current.globalMaxCapSol = val;
+                        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(current, null, 2));
+                    } catch (e) {
+                        log("error", `Failed to save globalMaxCapSol to user-config.json: ${e.message}`);
+                    }
+                } else if (state.action === "editing_tx_cap") {
+                    config.risk.maxDeployAmount = val;
+                    resMsg = `✅ Tx Max Cap diatur ke: ${val} SOL`;
+                    try {
+                        let current = {};
+                        if (fs.existsSync(USER_CONFIG_PATH)) {
+                            current = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+                        }
+                        current.maxDeployAmount = val;
+                        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(current, null, 2));
+                    } catch (e) {
+                        log("error", `Failed to save maxDeployAmount to user-config.json: ${e.message}`);
+                    }
                 }
                 
                 await sendToChat(cid, resMsg);
