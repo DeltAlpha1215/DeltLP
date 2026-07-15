@@ -826,7 +826,7 @@ async function main() {
     config: async () => {
         const feeStatus = config.management.feeEnabled ? "ON" : "OFF";
         const dryRunStatus = process.env.DRY_RUN === "true" ? "ON" : "OFF";
-        const text = `⚙️ *DeltLP Global Config*\n\n💰 *TP:* ${config.management.takeProfitPct}%\n📉 *SL:* ${config.management.stopLossPct}%\n💎 *Fee:* ${feeStatus}\n🧪 *Dry Run:* ${dryRunStatus}\n🛡️ *Global Max Cap:* ${config.management.globalMaxCapSol} SOL\n💸 *Tx Max Cap:* ${config.risk.maxDeployAmount} SOL`;
+        const text = `⚙️ *DeltLP Global Config*\n\n💰 *TP:* ${config.management.takeProfitPct}%\n📉 *SL:* ${config.management.stopLossPct}%\n💎 *Fee:* ${feeStatus}\n🧪 *Dry Run:* ${dryRunStatus}\n🛡️ *Global Max Cap:* ${config.management.globalMaxCapSol} SOL\n💸 *Tx Max Cap:* ${config.risk.maxDeployAmount} SOL\n⚡ *Priority Fee:* ${config.management.maxPriorityFeeSol} SOL\n🚀 *Jito Tip:* ${config.management.jitoTipSol} SOL`;
         const buttons = {
             inline_keyboard: [
                 [{ text: "📈 Set TP", callback_data: "c_set_tp" }, { text: "📉 Set SL", callback_data: "c_set_sl" }],
@@ -835,6 +835,7 @@ async function main() {
                     { text: dryRunStatus === "ON" ? "🧪 Dry Run: ON" : "🧪 Dry Run: OFF", callback_data: dryRunStatus === "ON" ? "c_dry_off" : "c_dry_on" }
                 ],
                 [{ text: "🛡️ Set Max Cap", callback_data: "c_set_cap" }, { text: "💸 Set Tx Max Cap", callback_data: "c_set_tx_cap" }],
+                [{ text: "⚡ Set Priority Fee", callback_data: "c_set_priority" }, { text: "🚀 Set Jito Tip", callback_data: "c_set_jito" }],
                 [{ text: "🔑 Set Wallet", callback_data: "c_set_wallet" }, { text: "⬅️ Back to Menu", callback_data: "m_m" }]
             ]
         };

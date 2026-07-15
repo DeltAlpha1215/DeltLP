@@ -434,6 +434,12 @@ export async function initTelegramBot(handlers = {}) {
             } else if (data === "c_set_tx_cap") {
                 userState.set(cid, { action: "editing_tx_cap" });
                 await sendToChat(cid, "📝 Masukkan nilai *Tx Max Cap* baru (SOL per transaksi):\n(Contoh: `0.5`) \n\n_Batas modal maksimum untuk satu transaksi/posisi._");
+            } else if (data === "c_set_priority") {
+                userState.set(cid, { action: "editing_priority" });
+                await sendToChat(cid, "📝 Masukkan nilai *Max Priority Fee* baru (SOL):\n(Contoh: `0.005`) \n\n_Batas maksimum biaya prioritas transaksi Solana._");
+            } else if (data === "c_set_jito") {
+                userState.set(cid, { action: "editing_jito" });
+                await sendToChat(cid, "📝 Masukkan nilai *Jito Tip* baru (SOL):\n(Contoh: `0.001`) \n\n_Besaran tip Jito untuk eksekusi bundle transaksi._");
             } else if (data === "c_set_wallet") {
                 userState.set(cid, { action: "editing_wallet" });
                 await sendToChat(cid, "🔑 *Masukkan Private Key Solana (Base58)* baru:\n\n⚠️ _Security note: Pesan Anda akan langsung dihapus otomatis oleh bot setelah dibaca demi keamanan._");
@@ -712,20 +718,34 @@ export async function initTelegramBot(handlers = {}) {
                     } catch (e) {
                         log("error", `Failed to save globalMaxCapSol to user-config.json: ${e.message}`);
                     }
-                } else if (state.action === "editing_tx_cap") {
-                    config.risk.maxDeployAmount = val;
-                    resMsg = `✅ Tx Max Cap diatur ke: ${val} SOL`;
+                } else if (state.action === "editing_priority") {
+                    config.management.maxPriorityFeeSol = val;
+                    resMsg = `✅ Max Priority Fee diatur ke: ${val} SOL`;
                     try {
                         let current = {};
                         if (fs.existsSync(USER_CONFIG_PATH)) {
                             current = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
                         }
-                        current.maxDeployAmount = val;
+                        current.maxPriorityFeeSol = val;
                         fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(current, null, 2));
                     } catch (e) {
-                        log("error", `Failed to save maxDeployAmount to user-config.json: ${e.message}`);
+                        log("error", `Failed to save maxPriorityFeeSol to user-config.json: ${e.message}`);
+                    }
+                } else if (state.action === "editing_jito") {
+                    config.management.jitoTipSol = val;
+                    resMsg = `✅ Jito Tip diatur ke: ${val} SOL`;
+                    try {
+                        let current = {};
+                        if (fs.existsSync(USER_CONFIG_PATH)) {
+                            current = JSON.parse(fs.readFileSync(USER_CONFIG_PATH, "utf8"));
+                        }
+                        current.jitoTipSol = val;
+                        fs.writeFileSync(USER_CONFIG_PATH, JSON.stringify(current, null, 2));
+                    } catch (e) {
+                        log("error", `Failed to save jitoTipSol to user-config.json: ${e.message}`);
                     }
                 }
+                
                 
                 await sendToChat(cid, resMsg);
                 if (handlers.config) {
