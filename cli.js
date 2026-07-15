@@ -1,4 +1,18 @@
 #!/usr/bin/env node
+import dns from "node:dns";
+dns.setDefaultResultOrder("ipv4first");
+
+// Override dns.lookup globally to force IPv4 to prevent fetch/undici ETIMEDOUT on WSL
+const originalLookup = dns.lookup;
+dns.lookup = function (hostname, options, callback) {
+  if (typeof options === "function") {
+    callback = options;
+    options = {};
+  }
+  options = options || {};
+  options.family = 4; // Force IPv4
+  return originalLookup.call(dns, hostname, options, callback);
+};
 /**
  * deltlp — Solana DLMM LP Agent CLI
  * Direct tool invocation with JSON output. Agent-native.
